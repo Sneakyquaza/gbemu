@@ -1,0 +1,27 @@
+[package]
+name = "gb-app"
+description = "Application de bureau : bibliothèque de jeux et lecture Game Boy"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gbemu"
+path = "src/main.rs"
+
+[dependencies]
+gb-core = { path = "../gb-core" }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+cpal = "0.18"
+gilrs = "0.11"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+sevenz-rust2 = { version = "0.25", default-features = false }
+crc32fast = "1.5"
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+png = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.15", default-features = false }
+
