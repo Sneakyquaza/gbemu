@@ -79,6 +79,11 @@ impl App {
                     Some(if plein { "Oui" } else { "Non" }.into()),
                     Act::PleinEcran,
                 ));
+                v.push((
+                    "Touches".into(),
+                    Some("Clavier, manette".into()),
+                    Act::Touches,
+                ));
                 v.push(("Retour à la bibliothèque".into(), None, Act::Quitter));
             }
             GenreMenu::Reglages => {
