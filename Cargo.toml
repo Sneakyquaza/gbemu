@@ -1,0 +1,16 @@
+[workspace]
+members = ["gb-core", "gb-headless"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+# Le cœur reste optimisé même en debug : les tests ROM tournent des milliers d'images.
+[profile.dev.package.gb-core]
+opt-level = 3
+
+[profile.release]
+lto = true
+codegen-units = 1

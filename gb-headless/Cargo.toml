@@ -1,0 +1,10 @@
+[package]
+name = "gb-headless"
+description = "Exécuteur Game Boy sans écran pour les ROM de test"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+gb-core = { path = "../gb-core" }
+png = "0.17"

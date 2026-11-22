@@ -1,0 +1,8 @@
+[package]
+name = "gb-core"
+description = "Cœur d'émulation Game Boy (DMG), sans E/S"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
