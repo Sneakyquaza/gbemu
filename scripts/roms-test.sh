@@ -60,6 +60,17 @@ gh_archive jsmolka/gba-tests "$GBA_TESTS_SHA" gba-tests
 gh_archive DenSinH/FuzzARM "$FUZZARM_SHA" fuzzarm
 gh_archive destoer/armwrestler-gba-fixed "$ARMWRESTLER_SHA" armwrestler
 
+# GBA PPU : nba-emu hw-test (BSD-3), destoer gba_tests (MIT), binaires tonc (J. Vijn, exemples
+# repris en CC0 par gbadev-org/libtonc-examples)
+gh_archive nba-emu/hw-test 3932a0e54dbb5d94b84798d2d5e462e080b95599 nba-hw-test
+gh_archive destoer/gba_tests d714cda49375b84183f8437b35848adb80c19562 destoer-gba-tests
+if [ ! -d "$ROMS/tonc" ]; then
+  d=$(mktemp -d "$ROMS/.dl_tonc.XXXX")
+  curl -fsSL -o "$d/tonc-bin.zip" "https://www.coranac.com/files/tonc-bin.zip"
+  mkdir "$d/x" && unzip -q "$d/tonc-bin.zip" -d "$d/x"
+  mv "$d/x/bin" "$ROMS/tonc"
+fi
+
 test -f "$ROMS/blargg/dmg_sound/dmg_sound.gb" || { echo "dmg_sound absent de $ROMS/blargg" >&2; exit 1; }
 test -f "$ROMS/blargg/cgb_sound/cgb_sound.gb" || { echo "cgb_sound absent de $ROMS/blargg" >&2; exit 1; }
 test -f "$ROMS/gba-tests/arm/arm.gba" || { echo "arm.gba absent de $ROMS/gba-tests" >&2; exit 1; }

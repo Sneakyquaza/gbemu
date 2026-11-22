@@ -6,8 +6,9 @@
 use std::fmt;
 
 pub(crate) const MAGIE: [u8; 4] = *b"GBAE";
-/// Version 1 : premier format GBA.
-pub(crate) const VERSION: u16 = 1;
+/// Version 1 : premier format GBA. 2 : PPU complet (points de référence affines, délais
+/// d'activation DISPCNT, fenêtres verticales).
+pub(crate) const VERSION: u16 = 2;
 /// Magie + version + CRC32.
 pub(crate) const TAILLE_ENTETE: usize = 10;
 

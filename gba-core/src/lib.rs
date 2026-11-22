@@ -1,5 +1,6 @@
 //! Cœur d'émulation Game Boy Advance : CPU ARM7TDMI, bus et carte mémoire, interruptions, timers,
-//! DMA, touches, PPU minimal (modes 3, 4 et 0), son (canaux Game Boy de gb-core + son direct).
+//! DMA, touches, PPU (modes 0-5, sprites, fenêtres, effets, mosaïque), son (canaux Game Boy de
+//! gb-core + son direct).
 //! Aucune E/S : l'appelant fournit la ROM en octets et lit l'écran en mémoire.
 //!
 //! BIOS : jamais celui de Nintendo. Le BIOS libre Cult-of-GBA (MIT, DenSinH et fleroviux,

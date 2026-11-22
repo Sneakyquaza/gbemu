@@ -1,8 +1,14 @@
-//! PPU minimal : synchronisation (HDraw/HBlank/VBlank, VCOUNT, IRQ, déclencheurs DMA) et rendu par
-//! ligne des modes 3 et 4 et du mode 0 (fonds texte, priorités, défilement).
-//! raccourci : pas de sprites, fenêtres, mélange, mosaïque, modes 1/2/5 ni transformation affine
-//! du fond 2 en bitmap ; c'est le lot « PPU complet », qui remplace `dessine_ligne` sans toucher
-//! à l'interface (`lit_io`, `ecrit_io`, `evenement`, `frame`, mémoires publiques).
+//! PPU : synchronisation (HDraw/HBlank/VBlank, VCOUNT, IRQ, déclencheurs DMA) et rendu par ligne
+//! (au début du HBlank) : modes 0-5, sprites, fenêtres, effets de couleur, mosaïque.
+//! Fonds dans `fonds.rs`, sprites dans `objets.rs`, composition ici.
+//! raccourci : rendu de la ligne entière au début du HBlank (pas au point près) : les
+//! changements de registres en cours de ligne et les retards de prise en compte de DISPCNT ne
+//! sont pas émulés ; à revoir si un jeu en dépend.
+
+mod fonds;
+mod objets;
+#[cfg(test)]
+mod tests;
 
 pub const LARGEUR: usize = 240;
 pub const HAUTEUR: usize = 160;
@@ -10,6 +16,22 @@ pub const HAUTEUR: usize = 160;
 const CYCLES_HDRAW: u64 = 960;
 const CYCLES_HBLANK: u64 = 272;
 const LIGNES: u16 = 228;
+
+/// Pixel transparent dans les lignes de calque (les couleurs n'ont que 15 bits).
+const VIDE: u16 = 0x8000;
+
+// Indices dans `regs` (adresse / 2).
+const DISPCNT: usize = 0;
+const GREENSWAP: usize = 1;
+const BGCNT: usize = 4;
+const WIN0H: usize = 0x20;
+const WIN0V: usize = 0x22;
+const WININ: usize = 0x24;
+const WINOUT: usize = 0x25;
+const MOSAIC: usize = 0x26;
+const BLDCNT: usize = 0x28;
+const BLDALPHA: usize = 0x29;
+const BLDY: usize = 0x2A;
 
 /// Ce que l'évènement PPU demande au bus.
 #[derive(Default)]
@@ -33,10 +55,29 @@ pub struct Ppu {
     dispstat: u16,
     vcount: u16,
     en_hblank: bool,
+    /// Points de référence internes des fonds affines 2 et 3 (x, y en 20.8 signé), rechargés
+    /// depuis BGxX/BGxY au VBlank et à chaque écriture, avancés de PB/PD à chaque ligne.
+    ref_aff: [[i32; 2]; 2],
+    /// Lignes restantes avant l'affichage d'un fond (0-3) ou des sprites (4) qui vient d'être
+    /// activé dans DISPCNT (la désactivation est immédiate), et (5) avant la fin d'un écran forcé
+    /// blanc (le début est immédiat). Délais vérifiés par nba-emu hw-test dispcnt-latch.
+    delai_actif: [u8; 6],
+    /// Fenêtres 0 et 1 actives sur la ligne (bascule à Y1, coupure à Y2).
+    fen_v: [bool; 2],
     /// Cycle du prochain évènement.
     pub prochain: u64,
     pub frame_ready: bool,
     ecran: Box<[u8]>,
+}
+
+/// Ligne des sprites : couleur (VIDE si rien), priorité, semi-transparence, fenêtre OBJ.
+struct LigneObj {
+    coul: [u16; LARGEUR],
+    prio: [u8; LARGEUR],
+    semi: [bool; LARGEUR],
+    fenetre: [bool; LARGEUR],
+    /// Mosaïque : 0 = non, sinon 1 + priorité du sprite qui a couvert le point (même transparent).
+    mosaique: [u8; LARGEUR],
 }
 
 impl Ppu {
@@ -49,6 +90,9 @@ impl Ppu {
             dispstat: 0,
             vcount: 0,
             en_hblank: false,
+            ref_aff: [[0; 2]; 2],
+            delai_actif: [0; 6],
+            fen_v: [false; 2],
             prochain: CYCLES_HDRAW,
             frame_ready: false,
             ecran: vec![0; LARGEUR * HAUTEUR * 3].into_boxed_slice(),
@@ -89,11 +133,35 @@ impl Ppu {
             }
             0x06 => {}
             _ => {
+                if o == 0 {
+                    let allumes = v & !self.regs[DISPCNT];
+                    for (i, d) in self.delai_actif[..5].iter_mut().enumerate() {
+                        if allumes & (0x100 << i) != 0 {
+                            *d = 3;
+                        }
+                    }
+                    if self.regs[DISPCNT] & !v & 0x80 != 0 {
+                        self.delai_actif[5] = 3;
+                    }
+                }
                 if let Some(r) = self.regs.get_mut((o / 2) as usize) {
                     *r = v;
                 }
+                // BG2X/BG2Y (0x28-0x2E), BG3X/BG3Y (0x38-0x3E) : rechargement immédiat.
+                if matches!(o, 0x28..=0x2E | 0x38..=0x3E) {
+                    let b = (o as usize - 0x28) / 0x10;
+                    let c = (o as usize >> 2) & 1;
+                    self.ref_aff[b][c] = self.ref_registre(b, c);
+                }
             }
         }
+    }
+
+    /// Valeur 28 bits signée de BG2X/BG2Y/BG3X/BG3Y (`b` = fond 2 ou 3 moins 2, `c` = 0 x, 1 y).
+    fn ref_registre(&self, b: usize, c: usize) -> i32 {
+        let i = 0x14 + b * 8 + c * 2;
+        let v = self.regs[i] as u32 | (self.regs[i + 1] as u32) << 16;
+        ((v << 4) as i32) >> 4
     }
 
     fn compare_vcount(&mut self) -> bool {
@@ -127,10 +195,19 @@ impl Ppu {
             self.dispstat &= !2;
             self.prochain += CYCLES_HDRAW;
             self.vcount = (self.vcount + 1) % LIGNES;
+            self.maj_fenetres_v();
+            for d in self.delai_actif.iter_mut() {
+                *d = d.saturating_sub(1);
+            }
             if self.vcount == HAUTEUR as u16 {
                 self.dispstat |= 1;
                 self.frame_ready = true;
                 ev.dma_vblank = true;
+                for b in 0..2 {
+                    for c in 0..2 {
+                        self.ref_aff[b][c] = self.ref_registre(b, c);
+                    }
+                }
                 if self.dispstat & 8 != 0 {
                     ev.irq |= 1;
                 }
@@ -144,9 +221,23 @@ impl Ppu {
         ev
     }
 
+    /// Bascule verticale des fenêtres en début de ligne : active à Y1, coupée à Y2.
+    fn maj_fenetres_v(&mut self) {
+        let y = self.vcount;
+        for w in 0..2 {
+            let v = self.regs[WIN0V + w];
+            if y == v >> 8 {
+                self.fen_v[w] = true;
+            }
+            if y == v & 0xFF {
+                self.fen_v[w] = false;
+            }
+        }
+    }
+
     #[inline]
     fn couleur(&self, i: usize) -> u16 {
-        u16::from_le_bytes([self.pram[i * 2], self.pram[i * 2 + 1]])
+        u16::from_le_bytes([self.pram[i * 2], self.pram[i * 2 + 1]]) & 0x7FFF
     }
 
     #[inline]
@@ -156,32 +247,11 @@ impl Ppu {
 
     fn dessine_ligne(&mut self) {
         let y = self.vcount as usize;
-        let dispcnt = self.regs[0];
-        let mut ligne = [0u16; LARGEUR];
-        if dispcnt & 0x80 != 0 {
-            ligne = [0x7FFF; LARGEUR]; // écran forcé blanc
-        } else {
-            let fond = self.couleur(0);
-            ligne.fill(fond);
-            let bg2 = dispcnt & 0x400 != 0;
-            match dispcnt & 7 {
-                0 => self.ligne_texte(y, dispcnt, &mut ligne),
-                3 if bg2 => {
-                    for (x, p) in ligne.iter_mut().enumerate() {
-                        *p = self.vram16((y * LARGEUR + x) * 2);
-                    }
-                }
-                4 if bg2 => {
-                    let base = if dispcnt & 0x10 != 0 { 0xA000 } else { 0 };
-                    for (x, p) in ligne.iter_mut().enumerate() {
-                        let i = self.vram[base + y * LARGEUR + x] as usize;
-                        if i != 0 {
-                            *p = self.couleur(i);
-                        }
-                    }
-                }
-                _ => {}
-            }
+        let ligne = self.compose_ligne(y);
+        // Avance des points de référence affines (BG2PB/PD, BG3PB/PD).
+        for b in 0..2 {
+            self.ref_aff[b][0] += self.regs[0x11 + b * 8] as i16 as i32;
+            self.ref_aff[b][1] += self.regs[0x13 + b * 8] as i16 as i32;
         }
         let out = &mut self.ecran[y * LARGEUR * 3..(y + 1) * LARGEUR * 3];
         for (px, &c) in out.as_chunks_mut::<3>().0.iter_mut().zip(ligne.iter()) {
@@ -192,60 +262,233 @@ impl Ppu {
         }
     }
 
-    /// Mode 0 : 4 fonds texte, du moins prioritaire au plus prioritaire.
-    fn ligne_texte(&self, y: usize, dispcnt: u16, ligne: &mut [u16; LARGEUR]) {
-        let mut ordre: Vec<usize> = (0..4).filter(|&b| dispcnt & (0x100 << b) != 0).collect();
-        // Priorité 0 = devant ; à égalité, le fond de plus petit numéro est devant.
-        ordre.sort_by_key(|&b| std::cmp::Reverse((self.regs[4 + b] & 3, b)));
-        for b in ordre {
-            let cnt = self.regs[4 + b] as usize;
-            let hofs = (self.regs[8 + b * 2] & 0x1FF) as usize;
-            let vofs = (self.regs[9 + b * 2] & 0x1FF) as usize;
-            let car = ((cnt >> 2) & 3) * 0x4000;
-            let ecr = ((cnt >> 8) & 31) * 0x800;
-            let c256 = cnt & 0x80 != 0;
-            let (l, h) = match cnt >> 14 {
-                0 => (256, 256),
-                1 => (512, 256),
-                2 => (256, 512),
-                _ => (512, 512),
-            };
-            let sy = (y + vofs) & (h - 1);
-            let ty = sy / 8;
-            for (x, p) in ligne.iter_mut().enumerate() {
-                let sx = (x + hofs) & (l - 1);
-                let tx = sx / 8;
-                let bloc = tx / 32 + (ty / 32) * (l / 256);
-                let e = self.vram16(ecr + bloc * 0x800 + ((ty % 32) * 32 + tx % 32) * 2) as usize;
-                let px = if e & 0x400 != 0 { 7 - sx % 8 } else { sx % 8 };
-                let py = if e & 0x800 != 0 { 7 - sy % 8 } else { sy % 8 };
-                let tuile = e & 0x3FF;
-                let idx = if c256 {
-                    let a = car + tuile * 64 + py * 8 + px;
-                    if a >= 0x10000 {
-                        continue;
+    /// Couleurs BGR555 de la ligne `y`.
+    fn compose_ligne(&self, y: usize) -> [u16; LARGEUR] {
+        let dispcnt = self.regs[DISPCNT];
+        if dispcnt & 0x80 != 0 || self.delai_actif[5] != 0 {
+            return [0x7FFF; LARGEUR]; // écran forcé blanc
+        }
+        let mode = dispcnt & 7;
+        // Fonds présents selon le mode, puis activés dans DISPCNT.
+        let possibles: u16 = match mode {
+            0 => 0xF,
+            1 => 0x7,
+            2 => 0xC,
+            3..=5 => 0x4,
+            _ => 0,
+        };
+        let mut prets = 0;
+        for (i, &d) in self.delai_actif[..5].iter().enumerate() {
+            if d == 0 {
+                prets |= 1 << i;
+            }
+        }
+        let actifs = (dispcnt >> 8) & possibles & prets;
+        let mut calques = [[VIDE; LARGEUR]; 4];
+        for (b, calque) in calques.iter_mut().enumerate() {
+            if actifs & (1 << b) == 0 {
+                continue;
+            }
+            match (mode, b) {
+                (0, _) | (1, 0 | 1) => self.ligne_texte(b, y, calque),
+                (1 | 2, _) => self.ligne_affine(b, y, calque),
+                _ => self.ligne_bitmap(mode, y, calque),
+            }
+            if self.regs[BGCNT + b] & 0x40 != 0 {
+                mosaique_h(calque, (self.regs[MOSAIC] & 0xF) as usize + 1);
+            }
+        }
+        let mut obj = LigneObj {
+            coul: [VIDE; LARGEUR],
+            prio: [4; LARGEUR],
+            semi: [false; LARGEUR],
+            fenetre: [false; LARGEUR],
+            mosaique: [0; LARGEUR],
+        };
+        let obj_actif = dispcnt & 0x1000 != 0 && prets & 0x10 != 0;
+        if obj_actif || dispcnt & 0x8000 != 0 {
+            self.ligne_objets(y, &mut obj);
+        }
+
+        // Fonds actifs triés : priorité puis numéro.
+        let mut ordre = [(0u16, 0usize); 4];
+        let mut n = 0;
+        for b in 0..4 {
+            if actifs & (1 << b) != 0 {
+                ordre[n] = (self.regs[BGCNT + b] & 3, b);
+                n += 1;
+            }
+        }
+        let ordre = &mut ordre[..n];
+        ordre.sort_unstable();
+
+        let bldcnt = self.regs[BLDCNT];
+        let mode_eff = (bldcnt >> 6) & 3;
+        let fond = self.couleur(0);
+        let mut ligne = [fond; LARGEUR];
+        // Cas courant sans fenêtre ni effet : calques peints de l'arrière vers l'avant.
+        if dispcnt & 0xE000 == 0
+            && (mode_eff == 0 || bldcnt & 0x3F == 0)
+            && !obj.semi.iter().any(|&s| s)
+        {
+            for p in (0..4).rev() {
+                for &(_, b) in ordre.iter().rev().filter(|&&(pb, _)| pb == p) {
+                    for (l, &c) in ligne.iter_mut().zip(calques[b].iter()) {
+                        if c != VIDE {
+                            *l = c;
+                        }
                     }
-                    self.vram[a] as usize
-                } else {
-                    let a = car + tuile * 32 + py * 4 + px / 2;
-                    if a >= 0x10000 {
-                        continue;
+                }
+                if obj_actif {
+                    for ((l, &c), &po) in ligne.iter_mut().zip(&obj.coul).zip(&obj.prio) {
+                        if po == p as u8 {
+                            *l = c;
+                        }
                     }
-                    let n = (self.vram[a] >> ((px & 1) * 4)) as usize & 15;
-                    if n == 0 {
-                        continue;
-                    }
-                    (e >> 12) * 16 + n
-                };
-                if idx != 0 {
-                    *p = self.couleur(idx);
                 }
             }
+            self.vert_inverse(&mut ligne);
+            return ligne;
+        }
+
+        let masques = self.masques_fenetres(dispcnt, &obj.fenetre);
+        let alpha = self.regs[BLDALPHA];
+        let eva = (alpha & 0x1F).min(16) as u32;
+        let evb = ((alpha >> 8) & 0x1F).min(16) as u32;
+        let evy = (self.regs[BLDY] & 0x1F).min(16) as u32;
+
+        for x in 0..LARGEUR {
+            let m = masques[x];
+            // Les deux calques visibles du dessus : (couleur, bit de cible, sprite semi-transparent).
+            let mut couches = [(fond, 0x20u16, false); 2];
+            let mut k = 0;
+            let o = obj.coul[x];
+            let mut obj_place = !obj_actif || o == VIDE || m & 0x10 == 0;
+            for &(p, b) in ordre.iter() {
+                if !obj_place && obj.prio[x] as u16 <= p {
+                    obj_place = true;
+                    couches[k] = (o, 0x10, obj.semi[x]);
+                    k += 1;
+                    if k == 2 {
+                        break;
+                    }
+                }
+                let c = calques[b][x];
+                if c != VIDE && m & (1 << b) != 0 {
+                    couches[k] = (c, 1 << b, false);
+                    k += 1;
+                    if k == 2 {
+                        break;
+                    }
+                }
+            }
+            if !obj_place && k < 2 {
+                couches[k] = (o, 0x10, obj.semi[x]);
+            }
+            let (a, ta, semi) = couches[0];
+            let (b, tb, _) = couches[1];
+            ligne[x] = if m & 0x20 == 0 {
+                a
+            } else if semi && bldcnt & (tb << 8) != 0 {
+                melange(a, b, eva, evb)
+            } else if bldcnt & ta == 0 {
+                a
+            } else {
+                match mode_eff {
+                    1 if bldcnt & (tb << 8) != 0 => melange(a, b, eva, evb),
+                    2 => eclaircit(a, evy),
+                    3 => assombrit(a, evy),
+                    _ => a,
+                }
+            };
+        }
+        self.vert_inverse(&mut ligne);
+        ligne
+    }
+
+    /// GREENSWAP : composantes vertes échangées entre points pairs et impairs.
+    fn vert_inverse(&self, ligne: &mut [u16; LARGEUR]) {
+        if self.regs[GREENSWAP] & 1 != 0 {
+            for paire in ligne.as_chunks_mut::<2>().0 {
+                let (g0, g1) = (paire[0] & 0x3E0, paire[1] & 0x3E0);
+                paire[0] = (paire[0] & !0x3E0) | g1;
+                paire[1] = (paire[1] & !0x3E0) | g0;
+            }
+        }
+    }
+
+    /// Calques autorisés par pixel (bits 0-3 fonds, 4 sprites, 5 effets).
+    fn masques_fenetres(&self, dispcnt: u16, fen_obj: &[bool; LARGEUR]) -> [u8; LARGEUR] {
+        if dispcnt & 0xE000 == 0 {
+            return [0x3F; LARGEUR];
+        }
+        let winout = self.regs[WINOUT];
+        let mut m = [(winout & 0x3F) as u8; LARGEUR];
+        if dispcnt & 0x8000 != 0 {
+            let dans = ((winout >> 8) & 0x3F) as u8;
+            for (mx, &f) in m.iter_mut().zip(fen_obj.iter()) {
+                if f {
+                    *mx = dans;
+                }
+            }
+        }
+        // Fenêtre 1 puis 0 : la 0 est prioritaire.
+        for w in (0..2).rev() {
+            if dispcnt & (0x2000 << w) == 0 || !self.fen_v[w] {
+                continue;
+            }
+            let h = self.regs[WIN0H + w];
+            let (x1, x2) = ((h >> 8) as usize, (h & 0xFF) as usize);
+            let dans = ((self.regs[WININ] >> (w * 8)) & 0x3F) as u8;
+            if x1 <= x2 {
+                m[x1.min(LARGEUR)..x2.min(LARGEUR)].fill(dans);
+            } else {
+                m[..x2.min(LARGEUR)].fill(dans);
+                m[x1.min(LARGEUR)..].fill(dans);
+            }
+        }
+        m
+    }
+}
+
+/// Mosaïque horizontale : chaque bloc de `n` pixels reprend son premier pixel.
+fn mosaique_h(l: &mut [u16; LARGEUR], n: usize) {
+    if n > 1 {
+        for x in 0..LARGEUR {
+            l[x] = l[x - x % n];
         }
     }
 }
 
-// --- Sauvegarde d'état (lot sauvegardes ; le lot PPU y ajoute ses champs) ---
+#[inline]
+fn composantes(c: u16) -> [u32; 3] {
+    [
+        (c & 0x1F) as u32,
+        ((c >> 5) & 0x1F) as u32,
+        ((c >> 10) & 0x1F) as u32,
+    ]
+}
+
+#[inline]
+fn assemble(c: [u32; 3]) -> u16 {
+    (c[0] | c[1] << 5 | c[2] << 10) as u16
+}
+
+/// Mélange alpha : min(31, (a×EVA + b×EVB) / 16) par composante.
+fn melange(a: u16, b: u16, eva: u32, evb: u32) -> u16 {
+    let (a, b) = (composantes(a), composantes(b));
+    assemble([0, 1, 2].map(|i| ((a[i] * eva + b[i] * evb) >> 4).min(31)))
+}
+
+fn eclaircit(a: u16, evy: u32) -> u16 {
+    assemble(composantes(a).map(|c| c + (((31 - c) * evy) >> 4)))
+}
+
+fn assombrit(a: u16, evy: u32) -> u16 {
+    assemble(composantes(a).map(|c| c - ((c * evy) >> 4)))
+}
+
+// --- Sauvegarde d'état ---
 
 use crate::etat::{verifie, Ecrit, ErreurEtat, Lecteur};
 
@@ -261,6 +504,9 @@ impl Ppu {
         e.u64(self.prochain);
         e.bool(self.frame_ready);
         e.octets(&self.ecran);
+        self.ref_aff.iter().flatten().for_each(|&v| e.u32(v as u32));
+        self.delai_actif.iter().for_each(|&v| e.u8(v));
+        self.fen_v.iter().for_each(|&v| e.bool(v));
     }
 
     pub(crate) fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
@@ -278,6 +524,15 @@ impl Ppu {
         verifie(p.prochain < 1 << 60, "ppu")?;
         p.frame_ready = l.bool()?;
         l.octets(&mut p.ecran)?;
+        for v in p.ref_aff.iter_mut().flatten() {
+            *v = l.u32()? as i32;
+        }
+        for v in &mut p.delai_actif {
+            *v = l.u8_max(3, "delai_actif")?;
+        }
+        for v in &mut p.fen_v {
+            *v = l.bool()?;
+        }
         *self = p;
         Ok(())
     }
