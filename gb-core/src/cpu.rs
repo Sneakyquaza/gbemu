@@ -32,17 +32,22 @@ pub struct Cpu {
 }
 
 impl Cpu {
-    /// Registres après la boot ROM DMG.
-    pub fn new() -> Self {
+    /// Registres après la boot ROM DMG, ou CGB (jeu CGB).
+    pub fn new(cgb: bool) -> Self {
+        let [a, f, b, c, d, e, h, l] = if cgb {
+            [0x11, 0x80, 0x00, 0x00, 0xFF, 0x56, 0x00, 0x0D]
+        } else {
+            [0x01, 0xB0, 0x00, 0x13, 0x00, 0xD8, 0x01, 0x4D]
+        };
         Cpu {
-            a: 0x01,
-            f: 0xB0,
-            b: 0x00,
-            c: 0x13,
-            d: 0x00,
-            e: 0xD8,
-            h: 0x01,
-            l: 0x4D,
+            a,
+            f,
+            b,
+            c,
+            d,
+            e,
+            h,
+            l,
             sp: 0xFFFE,
             pc: 0x0100,
             ime: false,
@@ -370,9 +375,8 @@ impl Cpu {
                 bus.tick();
             }
             0x10 => {
-                // raccourci : STOP ne met pas en veille (réveil par touche), il remet DIV à 0.
                 self.fetch(bus);
-                bus.reset_div();
+                bus.stop();
             }
             0x18 => {
                 let e = self.fetch(bus) as i8;

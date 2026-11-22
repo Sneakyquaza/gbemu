@@ -20,6 +20,46 @@ pub fn write_png(path: &Path, frame: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Écrit l'écran RGB8 (`GameBoy::frame_rgb`) en PNG couleur.
+pub fn write_png_rgb(path: &Path, rgb: &[u8]) -> Result<(), String> {
+    let f = File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut enc = png::Encoder::new(BufWriter::new(f), LARGEUR as u32, HAUTEUR as u32);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .and_then(|mut w| w.write_image_data(rgb))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Lit un PNG 160×144 en RGB8 (palette et niveaux de gris convertis).
+pub fn read_png_rgb(path: &Path) -> Result<Vec<u8>, String> {
+    let f = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut dec = png::Decoder::new(f);
+    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut r = dec.read_info().map_err(|e| e.to_string())?;
+    let mut buf = vec![0; r.output_buffer_size()];
+    let info = r.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    if info.width as usize != LARGEUR || info.height as usize != HAUTEUR {
+        return Err(format!(
+            "{} : taille {}x{}",
+            path.display(),
+            info.width,
+            info.height
+        ));
+    }
+    let ch = info.color_type.samples();
+    Ok(buf[..info.buffer_size()]
+        .chunks(ch)
+        .flat_map(|p| {
+            if ch >= 3 {
+                [p[0], p[1], p[2]]
+            } else {
+                [p[0]; 3]
+            }
+        })
+        .collect())
+}
+
 /// Écrit des échantillons stéréo entrelacés (-1..1) en WAV PCM 16 bits.
 pub fn write_wav(path: &Path, samples: &[f32], rate: u32) -> Result<(), String> {
     let err = |e: std::io::Error| format!("{}: {e}", path.display());

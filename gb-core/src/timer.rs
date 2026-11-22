@@ -2,6 +2,8 @@
 
 use crate::etat::{Ecrit, ErreurEtat, Lecteur};
 
+const DIV_CGB: u16 = 0x2674;
+
 pub struct Timer {
     /// Compteur interne, +4 par cycle machine.
     pub div: u16,
@@ -15,9 +17,10 @@ pub struct Timer {
 }
 
 impl Timer {
-    pub fn new() -> Self {
+    /// DIV interne au démarrage calé sur mooneye boot_div-dmgABCmgb / boot_div-cgbABCDE.
+    pub fn new(cgb: bool) -> Self {
         Timer {
-            div: 0xABC8,
+            div: if cgb { DIV_CGB } else { 0xABC8 },
             tima: 0,
             tma: 0,
             tac: 0xF8,

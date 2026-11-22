@@ -1,4 +1,5 @@
-//! Cœur d'émulation Game Boy (DMG) : CPU SM83, bus, timer, PPU, cartouches MBC0/1/3/5, son.
+//! Cœur d'émulation Game Boy (DMG) et Game Boy Color (CGB) : CPU SM83, bus, timer, PPU,
+//! cartouches MBC0/1/3/5, son.
 //! Aucune E/S : l'appelant fournit la ROM et les sauvegardes en octets et lit l'écran en mémoire.
 
 mod apu;
@@ -27,8 +28,9 @@ pub mod bouton {
     pub const START: u8 = 0x80;
 }
 
-/// Cycles machine par image (70 224 points / 4).
+/// Cycles machine par image (70 224 points / 4) à vitesse normale (le double en double vitesse CGB).
 pub const CYCLES_PAR_IMAGE: u64 = 17_556;
+const POINTS_PAR_IMAGE: u64 = CYCLES_PAR_IMAGE * 4;
 
 /// Registres CPU visibles (tests).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,29 +53,41 @@ pub struct GameBoy {
 }
 
 impl GameBoy {
-    /// Charge une ROM ; démarre directement en 0x0100 avec les registres post-boot DMG.
+    /// Charge une ROM ; démarre directement en 0x0100 avec les registres post-boot.
+    /// Mode CGB si l'en-tête (0x143) vaut 0x80 ou 0xC0, sinon DMG.
     pub fn new(rom: &[u8]) -> Result<Self, LoadError> {
+        let cgb = matches!(rom.get(0x143), Some(0x80 | 0xC0));
+        Self::new_mode(rom, cgb)
+    }
+
+    /// Comme [`GameBoy::new`] mais avec le mode imposé (tests : ROM DMG exécutées en CGB, ou l'inverse).
+    pub fn new_mode(rom: &[u8], cgb: bool) -> Result<Self, LoadError> {
         let cart = cartridge::Cartridge::new(rom)?;
         Ok(GameBoy {
-            cpu: cpu::Cpu::new(),
-            bus: bus::Bus::new(cart),
+            cpu: cpu::Cpu::new(cgb),
+            bus: bus::Bus::new(cart, cgb),
         })
+    }
+
+    /// Vrai en mode Game Boy Color.
+    pub fn is_cgb(&self) -> bool {
+        self.bus.cgb
     }
 
     /// Exécute jusqu'au prochain début de VBlank (ou une durée d'image si l'écran est éteint).
     pub fn run_frame(&mut self) {
-        let start = self.bus.cycles;
+        let start = self.bus.points;
         self.bus.ppu.frame_ready = false;
         while !self.bus.ppu.frame_ready {
-            let elapsed = self.bus.cycles - start;
-            if elapsed >= 2 * CYCLES_PAR_IMAGE
-                || (!self.bus.ppu.lcd_on() && elapsed >= CYCLES_PAR_IMAGE)
+            let elapsed = self.bus.points - start;
+            if elapsed >= 2 * POINTS_PAR_IMAGE
+                || (!self.bus.ppu.lcd_on() && elapsed >= POINTS_PAR_IMAGE)
             {
                 break;
             }
             self.cpu.step(&mut self.bus);
         }
-        self.bus.cart.advance_rtc(self.bus.cycles - start);
+        self.bus.cart.advance_rtc(self.bus.points / 4 - start / 4);
         self.bus.sync_apu();
     }
 
@@ -82,9 +96,22 @@ impl GameBoy {
         self.cpu.step(&mut self.bus);
     }
 
-    /// Écran : 160×144 teintes de 0 (blanc) à 3 (noir).
+    /// Écran DMG : 160×144 teintes de 0 (blanc) à 3 (noir). En mode CGB, ce sont les index
+    /// de couleur 0-3 avant palette (sans signification de couleur) : utiliser [`GameBoy::frame_rgb`].
     pub fn frame(&self) -> &[u8] {
         &self.bus.ppu.frame[..]
+    }
+
+    /// Écran RGB8 : 160×144×3 octets. CGB : couleurs BGR555 converties (voir
+    /// [`GameBoy::set_color_correction`]) ; DMG : gris neutres 0xFF, 0xAA, 0x55, 0x00.
+    pub fn frame_rgb(&self) -> &[u8] {
+        &self.bus.ppu.rgb[..]
+    }
+
+    /// Correction des couleurs CGB façon écran d'origine (désactivée par défaut : conversion
+    /// linéaire 5 → 8 bits). Réglage de sortie, hors sauvegarde d'état ; visible dès la ligne suivante.
+    pub fn set_color_correction(&mut self, on: bool) {
+        self.bus.ppu.set_correction(on);
     }
 
     /// Ajoute à `out` les échantillons son stéréo entrelacés (G, D) produits depuis le dernier appel.

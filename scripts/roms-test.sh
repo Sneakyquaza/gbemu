@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Retélécharge les ROM de test publiques dans roms/ (ignoré par git).
 # Sources officielles : blargg (miroir retrio/gb-test-roms), mooneye-test-suite (gekkio.fi),
-# dmg-acid2 (mattcurrie/dmg-acid2). Chaque archive est extraite dans son propre dossier vide.
+# dmg-acid2 et cgb-acid2 (mattcurrie). Chaque archive est extraite dans son propre dossier vide.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROMS=roms
@@ -34,6 +34,15 @@ if [ ! -d "$ROMS/dmg-acid2" ]; then
   mv "$d" "$ROMS/dmg-acid2"
 fi
 
+# cgb-acid2 (ROM + image de référence)
+if [ ! -d "$ROMS/cgb-acid2" ]; then
+  d=$(mktemp -d "$ROMS/.dl_cgbacid2.XXXX")
+  curl -fsSL -o "$d/cgb-acid2.gbc" "https://github.com/mattcurrie/cgb-acid2/releases/download/v1.1/cgb-acid2.gbc"
+  curl -fsSL -o "$d/reference.png" "https://raw.githubusercontent.com/mattcurrie/cgb-acid2/master/img/reference.png"
+  mv "$d" "$ROMS/cgb-acid2"
+fi
+
 test -f "$ROMS/blargg/dmg_sound/dmg_sound.gb" || { echo "dmg_sound absent de $ROMS/blargg" >&2; exit 1; }
+test -f "$ROMS/blargg/cgb_sound/cgb_sound.gb" || { echo "cgb_sound absent de $ROMS/blargg" >&2; exit 1; }
 
 echo "ROM de test prêtes dans $ROMS/ (archives téléchargées conservées dans $ROMS/.dl_*)."

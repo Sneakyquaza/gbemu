@@ -1,14 +1,14 @@
 //! Exécuteur sans écran : charge une ROM, exécute, écrit l'écran en PNG et la sortie série.
 
 use gb_core::GameBoy;
-use gb_headless::{mooneye_passed, serial_contains, write_png, write_wav};
+use gb_headless::{mooneye_passed, serial_contains, write_png, write_png_rgb, write_wav};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
 const AIDE: &str = "usage : gb-headless <rom> [--frames N] [--png sortie.png] \
 [--until-serial TEXTE] [--until-ld-b-b] [--wav sortie.wav] [--bench] \
-[--load-state état] [--save-state état]";
+[--load-state état] [--save-state état] [--correction]";
 
 /// Fréquence du WAV écrit par `--wav`.
 const FREQ_WAV: u32 = 48_000;
@@ -24,6 +24,7 @@ fn main() -> ExitCode {
     let mut bench = false;
     let mut load_state: Option<PathBuf> = None;
     let mut save_state: Option<PathBuf> = None;
+    let mut correction = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--frames" => match args.next().and_then(|v| v.parse().ok()) {
@@ -37,6 +38,7 @@ fn main() -> ExitCode {
             "--bench" => bench = true,
             "--load-state" => load_state = args.next().map(PathBuf::from),
             "--save-state" => save_state = args.next().map(PathBuf::from),
+            "--correction" => correction = true,
             "-h" | "--help" => {
                 println!("{AIDE}");
                 return ExitCode::SUCCESS;
@@ -67,6 +69,7 @@ fn main() -> ExitCode {
     }
 
     gb.set_sample_rate(FREQ_WAV);
+    gb.set_color_correction(correction);
     let mut son = Vec::new();
     let t0 = Instant::now();
     let stop = |gb: &GameBoy| {
@@ -124,7 +127,13 @@ fn main() -> ExitCode {
         }
     }
     if let Some(p) = png_out {
-        if let Err(e) = write_png(&p, gb.frame()) {
+        // PNG couleur en mode CGB, niveaux de gris en DMG.
+        let r = if gb.is_cgb() {
+            write_png_rgb(&p, gb.frame_rgb())
+        } else {
+            write_png(&p, gb.frame())
+        };
+        if let Err(e) = r {
             return erreur(&e);
         }
     }

@@ -1,11 +1,13 @@
 //! Sauvegardes instantanées : format binaire versionné, lecture sans panique.
 //! En-tête : magie `GBET`, version (u16), CRC32 de la ROM (u32), puis chaque composant
-//! dans un ordre fixe (CPU, bus, timer, PPU, APU, cartouche), petit-boutiste.
+//! dans un ordre fixe (CPU, bus, timer, PPU, APU, cartouche), petit-boutiste. Les tailles de
+//! WRAM, VRAM et l'image couleur dépendent du mode (DMG ou CGB) enregistré dans l'état.
 
 use std::fmt;
 
 pub(crate) const MAGIE: [u8; 4] = *b"GBET";
-pub(crate) const VERSION: u16 = 1;
+/// Version 2 : champs CGB (mode, vitesse, banques, palettes, HDMA, image couleur).
+pub(crate) const VERSION: u16 = 2;
 /// Magie + version + CRC32.
 pub(crate) const TAILLE_ENTETE: usize = 10;
 

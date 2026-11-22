@@ -417,10 +417,12 @@ pub struct Apu {
     cond_g: f32,
     cond_d: f32,
     echantillons: Vec<f32>,
+    /// Mode CGB : RAM d'onde accessible pendant la lecture, longueurs remises à zéro hors tension.
+    cgb: bool,
 }
 
 impl Apu {
-    pub fn new() -> Self {
+    pub fn new(cgb: bool) -> Self {
         let mut apu = Apu {
             regs: [0; 0x20],
             wave: [0; 0x10],
@@ -446,6 +448,7 @@ impl Apu {
             cond_g: 0.0,
             cond_d: 0.0,
             echantillons: Vec::new(),
+            cgb,
         };
         apu.set_sample_rate(48_000);
         // État après la boot ROM DMG : canal 1 actif (fin du « ding »), volume retombé à 0.
@@ -682,8 +685,13 @@ impl Apu {
     }
 
     /// DIV interne (points) vient de changer hors comptage normal : recale le séquenceur.
-    pub fn recale_div(&mut self, div: u16) {
-        self.avant_div = (0x2000 - (div & 0x1FFF) as u32) / 4;
+    /// En double vitesse (CGB), DIV avance 2× plus vite et le séquenceur suit son bit 5.
+    pub fn recale_div(&mut self, div: u16, double: bool) {
+        self.avant_div = if double {
+            (0x4000 - (div & 0x3FFF) as u32).div_ceil(8)
+        } else {
+            (0x2000 - (div & 0x1FFF) as u32) / 4
+        };
     }
 
     /// Front descendant du bit 4 de DIV (512 Hz).
@@ -767,12 +775,12 @@ impl Apu {
         }
     }
 
-    /// Octet de RAM d'onde visible par le CPU : pendant la lecture par le canal 3 (DMG),
-    /// seul l'octet en cours est accessible, et seulement au cycle où le canal le lit.
+    /// Octet de RAM d'onde visible par le CPU : pendant la lecture par le canal 3, seul l'octet
+    /// en cours est accessible (DMG : seulement au cycle où le canal le lit ; CGB : toujours).
     fn index_onde(&self, addr: u16) -> Option<usize> {
         if !self.c3.on {
             Some((addr & 0x0F) as usize)
-        } else if self.c3.lu {
+        } else if self.c3.lu || self.cgb {
             Some((self.c3.pos >> 1) as usize)
         } else {
             None
@@ -797,7 +805,10 @@ impl Apu {
             return;
         }
         if !self.allume {
-            // DMG : les compteurs de longueur restent accessibles hors tension.
+            // DMG : les compteurs de longueur restent accessibles hors tension (pas en CGB).
+            if self.cgb {
+                return;
+            }
             match addr {
                 0xFF11 => self.c1.long.compte = 64 - (v & 0x3F) as u16,
                 0xFF16 => self.c2.long.compte = 64 - (v & 0x3F) as u16,
@@ -914,8 +925,9 @@ impl Apu {
 
     fn declenche_onde(&mut self) {
         let c = &mut self.c3;
-        // DMG : redéclencher juste avant une lecture recopie une partie de la RAM d'onde en tête.
-        if c.on && c.compte == 0 {
+        // DMG : redéclencher juste avant une lecture recopie une partie de la RAM d'onde en tête
+        // (pas sur CGB).
+        if !self.cgb && c.on && c.compte == 0 {
             let o = (((c.pos + 1) >> 1) & 0x0F) as usize;
             if o < 4 {
                 self.wave[0] = self.wave[o];
@@ -946,10 +958,12 @@ impl Apu {
         self.c2 = Carre::default();
         self.c3 = Onde::default();
         self.c4 = Bruit::default();
-        self.c1.long.compte = longueurs[0];
-        self.c2.long.compte = longueurs[1];
-        self.c3.long.compte = longueurs[2];
-        self.c4.long.compte = longueurs[3];
+        if !self.cgb {
+            self.c1.long.compte = longueurs[0];
+            self.c2.long.compte = longueurs[1];
+            self.c3.long.compte = longueurs[2];
+            self.c4.long.compte = longueurs[3];
+        }
         self.sale = true;
     }
 }
