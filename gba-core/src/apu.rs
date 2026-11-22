@@ -103,10 +103,11 @@ impl Apu {
         }
     }
 
-    /// Rattrape le moteur Game Boy jusqu'au cycle `cycles`.
+    /// Rattrape le moteur Game Boy jusqu'au cycle `cycles` (un retour en arrière, après chargement
+    /// d'un état, repart simplement de `cycles`).
     pub fn sync(&mut self, cycles: u64) {
         self.psg
-            .avance(cycles / CYCLES_PAR_PAS - self.fait / CYCLES_PAR_PAS);
+            .avance((cycles / CYCLES_PAR_PAS).saturating_sub(self.fait / CYCLES_PAR_PAS));
         self.fait = cycles;
     }
 
