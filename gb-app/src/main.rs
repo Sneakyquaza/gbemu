@@ -4,6 +4,7 @@
 mod app;
 mod audio;
 mod biblio;
+mod console;
 mod dat;
 mod dessin;
 mod etats;
@@ -12,13 +13,14 @@ mod jeu;
 mod manette;
 mod rembobinage;
 mod sauve;
+mod touches;
 
 use std::path::PathBuf;
 use std::time::Instant;
 
 const AIDE: &str = "gbemu [--jeux DOSSIER] [--donnees DOSSIER] [--rom FICHIER.gb]
   Vérification visuelle : [--demo] [--capture SORTIE.png] [--images N] [--taille LxH]
-  [--menu pause|reglages] [--grille] [--recherche TEXTE] [--selection N]";
+  [--menu pause|reglages|touches[-raccourcis|-capture|-allume|-conflit]] [--grille] [--recherche TEXTE] [--selection N]";
 
 fn main() -> eframe::Result {
     let debut = Instant::now();

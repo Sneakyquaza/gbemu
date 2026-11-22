@@ -19,6 +19,7 @@ enum Act {
     OuvrirDossier,
     OublierAjouts,
     Reanalyser,
+    Touches,
     Fermer,
 }
 
@@ -92,6 +93,7 @@ impl App {
                     Some(self.config.palette.nom().into()),
                     Act::Palette,
                 ));
+                v.push(("Touches".into(), None, Act::Touches));
                 v.push(("Fermer".into(), None, Act::Fermer));
             }
         }
@@ -154,6 +156,10 @@ impl App {
             Act::Reanalyser => {
                 self.lancer_analyse(false);
                 self.dire("Analyse de la bibliothèque…");
+            }
+            Act::Touches => {
+                let genre = self.menu.take().map(|m| m.genre);
+                self.ouvrir_touches(genre);
             }
         }
     }

@@ -10,6 +10,7 @@ use crate::jaquettes::Jaquettes;
 use crate::jeu::Partie;
 use crate::manette::{b, Etat, Manettes};
 use crate::sauve::{Chemins, Config, Palette};
+use crate::touches::{Action, Clavier, Touches};
 use eframe::egui::{
     self, Color32, ColorImage, CornerRadius, Event, Id, Key, Pos2, Rect, Sense, Stroke, StrokeKind,
     TextureHandle, TextureOptions, Vec2, ViewportCommand,
@@ -25,6 +26,8 @@ use std::time::Instant;
 mod ecran_biblio;
 #[path = "ecran_jeu.rs"]
 mod ecran_jeu;
+#[path = "ecran_touches.rs"]
+mod ecran_touches;
 #[path = "menus.rs"]
 mod menus;
 #[path = "toast.rs"]
@@ -109,6 +112,9 @@ pub struct App {
     capture_demandee: bool,
     capture_faite: Arc<AtomicBool>,
     hud: ecran_jeu::Hud,
+    touches: Touches,
+    clavier: Clavier,
+    ecran_touches: Option<ecran_touches::EcranTouches>,
 }
 
 fn reveil(ctx: &egui::Context) -> impl Fn() + Send + Sync + 'static {
@@ -251,6 +257,9 @@ impl App {
             capture_demandee: false,
             capture_faite: Arc::new(AtomicBool::new(false)),
             hud: Default::default(),
+            touches: Touches::default(),
+            clavier: Clavier::default(),
+            ecran_touches: None,
         };
 
         if app.opts.demo {
@@ -295,6 +304,15 @@ impl App {
         }
         if app.opts.menu.as_deref() == Some("reglages") {
             app.ouvrir_menu(GenreMenu::Reglages);
+        }
+        app.touches = Touches::charger(&Touches::chemin(&app.chemins.donnees));
+        if let Some(v) = app
+            .opts
+            .menu
+            .clone()
+            .and_then(|m| m.strip_prefix("touches").map(String::from))
+        {
+            app.ouvrir_touches_demo(&v);
         }
         app
     }
@@ -660,6 +678,7 @@ impl eframe::App for App {
             .map(|m| m.lire(maintenant))
             .unwrap_or_default();
         self.dernier_pad = pad;
+        self.suivre_entrees(ui);
         let evts: Vec<Event> = ui.input(|i| i.events.clone());
         let deposes: Vec<PathBuf> = ui.input(|i| {
             i.raw
@@ -671,14 +690,17 @@ impl eframe::App for App {
         if !deposes.is_empty() {
             self.deposes(deposes);
         }
-        if ui.input(|i| i.key_pressed(Key::F11)) {
+        if self.action_appuyee(Action::PleinEcran) {
             self.basculer_plein_ecran();
         }
         if pad.appuis != 0 {
             ctx.request_repaint();
         }
 
-        let rapide = if self.menu.is_some() {
+        let rapide = if self.ecran_touches.is_some() {
+            self.entrees_touches(pad);
+            false
+        } else if self.menu.is_some() {
             self.entrees_menu(&evts, pad);
             false
         } else if self.partie.is_some() {
@@ -698,6 +720,9 @@ impl eframe::App for App {
         }
         if self.menu.is_some() {
             self.dessiner_menu(ui);
+        }
+        if self.ecran_touches.is_some() {
+            self.dessiner_touches(ui);
         }
         self.dessiner_toast(ui);
         self.dessiner_depot(ui);
