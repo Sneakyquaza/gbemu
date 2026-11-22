@@ -1,5 +1,7 @@
 //! Timer DMG : compteur interne 16 bits (DIV = octet haut), TIMA sur front descendant.
 
+use crate::etat::{Ecrit, ErreurEtat, Lecteur};
+
 pub struct Timer {
     /// Compteur interne, +4 par cycle machine.
     pub div: u16,
@@ -22,6 +24,23 @@ impl Timer {
             overflow: false,
             reloading: false,
         }
+    }
+
+    pub fn sauve(&self, e: &mut Vec<u8>) {
+        e.u16(self.div);
+        e.octets(&[self.tima, self.tma, self.tac]);
+        e.bool(self.overflow);
+        e.bool(self.reloading);
+    }
+
+    pub fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        self.div = l.u16()?;
+        self.tima = l.u8()?;
+        self.tma = l.u8()?;
+        self.tac = l.u8()?;
+        self.overflow = l.bool()?;
+        self.reloading = l.bool()?;
+        Ok(())
     }
 
     #[inline]

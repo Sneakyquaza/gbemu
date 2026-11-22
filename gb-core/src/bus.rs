@@ -3,6 +3,7 @@
 
 use crate::apu::Apu;
 use crate::cartridge::Cartridge;
+use crate::etat::{verifie, Ecrit, ErreurEtat, Lecteur};
 use crate::ppu::Ppu;
 use crate::timer::Timer;
 
@@ -64,6 +65,53 @@ impl Bus {
         };
         bus.apu.recale_div(bus.timer.div);
         bus
+    }
+
+    /// Sauvegarde d'état du bus et de tout le matériel (la sortie série, journal de l'hôte, n'en fait pas partie).
+    pub fn sauve(&self, e: &mut Vec<u8>) {
+        e.octets(&self.wram);
+        e.octets(&self.hram);
+        e.u64(self.cycles);
+        e.u64(self.apu_cycles);
+        e.octets(&[self.if_, self.ie, self.p1, self.buttons, self.sb, self.sc]);
+        e.u32(self.serial_cycles);
+        e.u8(self.dma_reg);
+        e.bool(self.dma_active);
+        e.u16(self.dma_src);
+        e.u16(self.dma_idx);
+        let (src, delai) = self.dma_start.unwrap_or_default();
+        e.bool(self.dma_start.is_some());
+        e.u16(src);
+        e.u8(delai);
+        self.timer.sauve(e);
+        self.ppu.sauve(e);
+        self.apu.sauve(e);
+        self.cart.sauve(e);
+    }
+
+    pub fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        l.octets(&mut self.wram)?;
+        l.octets(&mut self.hram)?;
+        self.cycles = l.u64()?;
+        self.apu_cycles = l.u64()?;
+        verifie(self.apu_cycles <= self.cycles, "cycles")?;
+        let mut r = [0u8; 6];
+        l.octets(&mut r)?;
+        [self.if_, self.ie, self.p1, self.buttons, self.sb, self.sc] = r;
+        self.p1 &= 0x30;
+        self.serial_cycles = l.u32()?;
+        verifie(self.serial_cycles <= 1024, "série")?;
+        self.dma_reg = l.u8()?;
+        self.dma_active = l.bool()?;
+        self.dma_src = l.u16()?;
+        self.dma_idx = l.u16_max(0xA0, "DMA")?;
+        let attente = l.bool()?;
+        let (src, delai) = (l.u16()?, l.u8()?);
+        self.dma_start = attente.then_some((src, delai));
+        self.timer.charge(l)?;
+        self.ppu.charge(l)?;
+        self.apu.charge(l)?;
+        self.cart.charge(l)
     }
 
     /// Rattrape les cycles son en attente (avant tout accès à l'APU).

@@ -2,6 +2,8 @@
 //! Exécuté par lots (`avance`, rattrapé par le bus avant chaque accès) ; produit des échantillons stéréo f32 entrelacés
 //! (moyenne sur la période d'échantillonnage, puis passe-haut façon condensateur de sortie).
 
+use crate::etat::{verifie, Ecrit, ErreurEtat, Lecteur};
+
 /// Bits toujours lus à 1 pour FF10..FF2F (DMG).
 const MASQUES: [u8; 0x20] = [
     0x80, 0x3F, 0x00, 0xFF, 0xBF, 0xFF, 0x3F, 0x00, 0xFF, 0xBF, 0x7F, 0xFF, 0x9F, 0xFF, 0xBF, 0xFF,
@@ -27,6 +29,20 @@ struct Enveloppe {
 }
 
 impl Enveloppe {
+    fn sauve(&self, e: &mut Vec<u8>) {
+        e.octets(&[self.initial, self.periode, self.vol, self.compte]);
+        e.bool(self.monte);
+    }
+
+    fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        self.initial = l.u8_max(15, "enveloppe")?;
+        self.periode = l.u8_max(7, "enveloppe")?;
+        self.vol = l.u8_max(15, "enveloppe")?;
+        self.compte = l.u8()?;
+        self.monte = l.bool()?;
+        Ok(())
+    }
+
     fn ecrit(&mut self, v: u8) {
         self.initial = v >> 4;
         self.monte = v & 0x08 != 0;
@@ -70,6 +86,17 @@ struct Longueur {
 }
 
 impl Longueur {
+    fn sauve(&self, e: &mut Vec<u8>) {
+        e.u16(self.compte);
+        e.bool(self.actif);
+    }
+
+    fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        self.compte = l.u16_max(256, "longueur")?;
+        self.actif = l.bool()?;
+        Ok(())
+    }
+
     /// Pas de longueur (étapes paires) ; vrai si le canal doit s'éteindre.
     fn horloge(&mut self) -> bool {
         if self.actif && self.compte > 0 {
@@ -111,6 +138,29 @@ struct Carre {
 }
 
 impl Carre {
+    fn sauve(&self, e: &mut Vec<u8>) {
+        e.bool(self.on);
+        e.bool(self.dac);
+        e.u8(self.rapport);
+        e.u8(self.pos);
+        e.u16(self.freq);
+        e.u16(self.compte);
+        self.long.sauve(e);
+        self.env.sauve(e);
+    }
+
+    fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        self.on = l.bool()?;
+        self.dac = l.bool()?;
+        self.rapport = l.u8_max(3, "carré")?;
+        self.pos = l.u8_max(7, "carré")?;
+        self.freq = l.u16_max(2047, "carré")?;
+        self.compte = l.u16_max(2048, "carré")?;
+        verifie(!self.on || self.compte > 0, "carré")?;
+        self.long.charge(l)?;
+        self.env.charge(l)
+    }
+
     fn sortie(&self) -> u8 {
         if self.on && RAPPORTS[self.rapport as usize] & (0x80 >> self.pos) != 0 {
             self.env.vol
@@ -150,6 +200,26 @@ struct Balayage {
 }
 
 impl Balayage {
+    fn sauve(&self, e: &mut Vec<u8>) {
+        e.octets(&[self.periode, self.decalage, self.compte]);
+        e.u16(self.ombre);
+        e.bool(self.negatif);
+        e.bool(self.actif);
+        e.bool(self.negatif_utilise);
+    }
+
+    fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        self.periode = l.u8_max(7, "balayage")?;
+        self.decalage = l.u8_max(7, "balayage")?;
+        self.compte = l.u8()?;
+        // Au plus 2047 : le calcul ombre + ombre >> n ne déborde pas.
+        self.ombre = l.u16_max(2047, "balayage")?;
+        self.negatif = l.bool()?;
+        self.actif = l.bool()?;
+        self.negatif_utilise = l.bool()?;
+        Ok(())
+    }
+
     fn calcul(&mut self) -> u16 {
         let d = self.ombre >> self.decalage;
         if self.negatif {
@@ -181,6 +251,31 @@ struct Onde {
 }
 
 impl Onde {
+    fn sauve(&self, e: &mut Vec<u8>) {
+        e.bool(self.on);
+        e.bool(self.dac);
+        e.u8(self.volume);
+        e.u16(self.freq);
+        e.u16(self.compte);
+        e.u8(self.pos);
+        e.u8(self.tampon);
+        e.bool(self.lu);
+        self.long.sauve(e);
+    }
+
+    fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        self.on = l.bool()?;
+        self.dac = l.bool()?;
+        self.volume = l.u8_max(3, "onde")?;
+        self.freq = l.u16_max(2047, "onde")?;
+        // 2047 - freq + 3 au déclenchement.
+        self.compte = l.u16_max(2050, "onde")?;
+        self.pos = l.u8_max(31, "onde")?;
+        self.tampon = l.u8()?;
+        self.lu = l.bool()?;
+        self.long.charge(l)
+    }
+
     fn sortie(&self) -> u8 {
         if !self.on || self.volume == 0 {
             return 0;
@@ -232,6 +327,33 @@ struct Bruit {
 }
 
 impl Bruit {
+    fn sauve(&self, e: &mut Vec<u8>) {
+        e.bool(self.on);
+        e.bool(self.dac);
+        e.octets(&[self.decalage, self.diviseur]);
+        e.bool(self.etroit);
+        e.u32(self.compte);
+        e.u16(self.lfsr);
+        self.long.sauve(e);
+        self.env.sauve(e);
+    }
+
+    fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        self.on = l.bool()?;
+        self.dac = l.bool()?;
+        self.decalage = l.u8_max(15, "bruit")?;
+        self.diviseur = l.u8_max(7, "bruit")?;
+        self.etroit = l.bool()?;
+        self.compte = l.u32()?;
+        verifie(
+            self.compte <= 28 << 15 && (!self.on || self.compte > 0),
+            "bruit",
+        )?;
+        self.lfsr = l.u16_max(0x7FFF, "bruit")?;
+        self.long.charge(l)?;
+        self.env.charge(l)
+    }
+
     fn periode(&self) -> u32 {
         (DIVISEURS[self.diviseur as usize] as u32) << self.decalage
     }
@@ -344,6 +466,65 @@ impl Apu {
         apu.cond_g = apu.niv_g;
         apu.cond_d = apu.niv_d;
         apu
+    }
+
+    /// Sauvegarde d'état ; la fréquence de sortie (réglage de l'hôte) et les échantillons
+    /// en attente n'en font pas partie.
+    pub fn sauve(&self, e: &mut Vec<u8>) {
+        e.octets(&self.regs);
+        e.octets(&self.wave);
+        e.bool(self.allume);
+        e.u8(self.etape);
+        self.c1.sauve(e);
+        self.balayage.sauve(e);
+        self.c2.sauve(e);
+        self.c3.sauve(e);
+        self.c4.sauve(e);
+        e.bool(self.sale);
+        for v in [
+            self.niv_g,
+            self.niv_d,
+            self.somme_g,
+            self.somme_d,
+            self.cond_g,
+            self.cond_d,
+        ] {
+            e.f32(v);
+        }
+        e.u32(self.n);
+        e.u32(self.n_niv);
+        e.u32(self.phase);
+        e.u32(self.avant_div);
+    }
+
+    /// Relit l'état (les échantillons en attente sont gardés).
+    pub fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        l.octets(&mut self.regs)?;
+        l.octets(&mut self.wave)?;
+        self.allume = l.bool()?;
+        self.etape = l.u8_max(7, "séquenceur")?;
+        self.c1.charge(l)?;
+        self.balayage.charge(l)?;
+        self.c2.charge(l)?;
+        self.c3.charge(l)?;
+        self.c4.charge(l)?;
+        self.sale = l.bool()?;
+        self.niv_g = l.f32()?;
+        self.niv_d = l.f32()?;
+        self.somme_g = l.f32()?;
+        self.somme_d = l.f32()?;
+        self.cond_g = l.f32()?;
+        self.cond_d = l.f32()?;
+        self.n = l.u32()?;
+        self.n_niv = l.u32()?;
+        self.phase = l.u32()?;
+        self.avant_div = l.u32()?;
+        verifie(self.n_niv <= self.n && self.n <= CYCLES_PAR_S, "APU")?;
+        verifie(self.phase < CYCLES_PAR_S, "APU")?;
+        verifie((1..=2048).contains(&self.avant_div), "APU séquenceur")?;
+        // Même invariant que `tick` : attente = cycles restants jusqu'à l'échantillon suivant.
+        self.attente = (CYCLES_PAR_S - self.phase).div_ceil(self.frequence);
+        Ok(())
     }
 
     /// Fréquence de sortie (Hz, bornée à 8 000-192 000).

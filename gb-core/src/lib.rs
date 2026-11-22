@@ -5,10 +5,14 @@ mod apu;
 mod bus;
 mod cartridge;
 mod cpu;
+mod etat;
 mod ppu;
 mod timer;
 
+use etat::Ecrit;
+
 pub use cartridge::LoadError;
+pub use etat::ErreurEtat;
 pub use ppu::{HAUTEUR, LARGEUR};
 
 /// Boutons pour [`GameBoy::set_buttons`] (bit à 1 = enfoncé).
@@ -115,6 +119,62 @@ impl GameBoy {
 
     pub fn title(&self) -> String {
         self.bus.cart.title()
+    }
+
+    /// Sauvegarde d'état complète (CPU, mémoire, PPU avec l'écran, APU, cartouche),
+    /// liée à la ROM par son CRC32. Rapide (copie de ~40 Kio + RAM cartouche) : utilisable
+    /// pour un rembobinage. Ni la sortie série ni les échantillons son en attente n'y sont.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut e = Vec::with_capacity(64 * 1024);
+        e.octets(&etat::MAGIE);
+        e.u16(etat::VERSION);
+        e.u32(self.bus.cart.crc);
+        self.cpu.sauve(&mut e);
+        self.bus.sauve(&mut e);
+        e
+    }
+
+    /// Recharge un état de [`GameBoy::save_state`]. En cas d'erreur (autre ROM, version,
+    /// données tronquées ou corrompues), la console reste exactement dans son état précédent.
+    /// Vide la sortie série ; les échantillons son en attente sont gardés.
+    pub fn load_state(&mut self, data: &[u8]) -> Result<(), ErreurEtat> {
+        let mut l = etat::Lecteur::new(data);
+        let mut magie = [0u8; 4];
+        l.octets(&mut magie).map_err(|_| ErreurEtat::Format)?;
+        if magie != etat::MAGIE {
+            return Err(ErreurEtat::Format);
+        }
+        let version = l.u16()?;
+        if version != etat::VERSION {
+            return Err(ErreurEtat::Version(version));
+        }
+        if l.u32()? != self.bus.cart.crc {
+            return Err(ErreurEtat::AutreRom);
+        }
+        let avant = self.save_state();
+        let r = self
+            .cpu
+            .charge(&mut l)
+            .and_then(|_| self.bus.charge(&mut l));
+        let r = r.and_then(|_| {
+            if l.fini() {
+                Ok(())
+            } else {
+                Err(ErreurEtat::Taille)
+            }
+        });
+        if r.is_err() {
+            // Retour à l'état d'avant : il vient d'être produit, sa relecture ne peut pas échouer.
+            let mut l = etat::Lecteur::new(&avant[etat::TAILLE_ENTETE..]);
+            let ok = self
+                .cpu
+                .charge(&mut l)
+                .and_then(|_| self.bus.charge(&mut l));
+            debug_assert!(ok.is_ok());
+            return r;
+        }
+        self.bus.serial_out.clear();
+        Ok(())
     }
 
     /// Vrai si `LD B,B` a été exécuté (fin des tests mooneye).

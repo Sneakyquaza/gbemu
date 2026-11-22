@@ -7,7 +7,8 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 const AIDE: &str = "usage : gb-headless <rom> [--frames N] [--png sortie.png] \
-[--until-serial TEXTE] [--until-ld-b-b] [--wav sortie.wav] [--bench]";
+[--until-serial TEXTE] [--until-ld-b-b] [--wav sortie.wav] [--bench] \
+[--load-state état] [--save-state état]";
 
 /// Fréquence du WAV écrit par `--wav`.
 const FREQ_WAV: u32 = 48_000;
@@ -21,6 +22,8 @@ fn main() -> ExitCode {
     let mut until_serial: Option<String> = None;
     let mut until_ldbb = false;
     let mut bench = false;
+    let mut load_state: Option<PathBuf> = None;
+    let mut save_state: Option<PathBuf> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--frames" => match args.next().and_then(|v| v.parse().ok()) {
@@ -32,6 +35,8 @@ fn main() -> ExitCode {
             "--until-serial" => until_serial = args.next(),
             "--until-ld-b-b" => until_ldbb = true,
             "--bench" => bench = true,
+            "--load-state" => load_state = args.next().map(PathBuf::from),
+            "--save-state" => save_state = args.next().map(PathBuf::from),
             "-h" | "--help" => {
                 println!("{AIDE}");
                 return ExitCode::SUCCESS;
@@ -51,6 +56,15 @@ fn main() -> ExitCode {
         Ok(gb) => gb,
         Err(e) => return erreur(&format!("{} : {e}", rom.display())),
     };
+    if let Some(p) = &load_state {
+        let etat = match std::fs::read(p) {
+            Ok(d) => d,
+            Err(e) => return erreur(&format!("{} : {e}", p.display())),
+        };
+        if let Err(e) = gb.load_state(&etat) {
+            return erreur(&format!("{} : {e}", p.display()));
+        }
+    }
 
     gb.set_sample_rate(FREQ_WAV);
     let mut son = Vec::new();
@@ -102,6 +116,11 @@ fn main() -> ExitCode {
     if let Some(p) = wav_out {
         if let Err(e) = write_wav(&p, &son, FREQ_WAV) {
             return erreur(&e);
+        }
+    }
+    if let Some(p) = save_state {
+        if let Err(e) = std::fs::write(&p, gb.save_state()) {
+            return erreur(&format!("{} : {e}", p.display()));
         }
     }
     if let Some(p) = png_out {

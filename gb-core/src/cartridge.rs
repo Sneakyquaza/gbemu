@@ -1,5 +1,6 @@
 //! Cartouche : en-tête, contrôleurs MBC0/1/3/5, RAM batterie et RTC du MBC3.
 
+use crate::etat::{crc32, verifie, Ecrit, ErreurEtat, Lecteur};
 use std::fmt;
 
 /// Taille maximale acceptée (MBC5 : 512 banques de 16 Kio).
@@ -122,6 +123,8 @@ pub struct Cartridge {
     rom_off0: usize,
     rom_off1: usize,
     ram_off: usize,
+    /// CRC32 du fichier ROM (empreinte des sauvegardes d'état).
+    pub crc: u32,
 }
 
 impl Cartridge {
@@ -182,9 +185,52 @@ impl Cartridge {
             rom_off0: 0,
             rom_off1: 0x4000,
             ram_off: 0,
+            crc: crc32(data),
         };
         cart.update_offsets();
         Ok(cart)
+    }
+
+    /// Sauvegarde d'état : RAM, registres MBC et RTC (la ROM est identifiée par `crc`).
+    pub fn sauve(&self, e: &mut Vec<u8>) {
+        e.u32(self.ram.len() as u32);
+        e.octets(&self.ram);
+        e.bool(self.ram_enabled);
+        e.u16(self.rom_bank);
+        e.u8(self.bank2);
+        e.bool(self.mbc1_mode);
+        e.bool(self.rtc.is_some());
+        if let Some(rtc) = &self.rtc {
+            e.octets(&rtc.regs());
+            e.octets(&rtc.latched);
+            e.u8(rtc.latch_prev);
+            e.u64(rtc.sub);
+        }
+    }
+
+    pub fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        verifie(l.u32()? as usize == self.ram.len(), "taille RAM")?;
+        l.octets(&mut self.ram)?;
+        self.ram_enabled = l.bool()?;
+        self.rom_bank = l.u16_max(0x1FF, "MBC")?;
+        self.bank2 = l.u8_max(0x0F, "MBC")?;
+        self.mbc1_mode = l.bool()?;
+        verifie(l.bool()? == self.rtc.is_some(), "RTC")?;
+        if let Some(rtc) = &mut self.rtc {
+            let mut r = [0u8; 5];
+            l.octets(&mut r)?;
+            rtc.s = r[0] & 0x3F;
+            rtc.m = r[1] & 0x3F;
+            rtc.h = r[2] & 0x1F;
+            rtc.dl = r[3];
+            rtc.dh = r[4] & 0xC1;
+            l.octets(&mut rtc.latched)?;
+            rtc.latch_prev = l.u8()?;
+            rtc.sub = l.u64()?;
+            verifie(rtc.sub < M_CYCLES_PAR_SECONDE, "RTC")?;
+        }
+        self.update_offsets();
+        Ok(())
     }
 
     fn update_offsets(&mut self) {

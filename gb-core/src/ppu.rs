@@ -1,5 +1,7 @@
 //! PPU DMG rendu par ligne : fond, fenêtre, sprites (10 par ligne), STAT/LY/LYC et modes.
 
+use crate::etat::{verifie, Ecrit, ErreurEtat, Lecteur};
+
 pub const LARGEUR: usize = 160;
 pub const HAUTEUR: usize = 144;
 
@@ -56,6 +58,68 @@ impl Ppu {
             frame: Box::new([0; LARGEUR * HAUTEUR]),
             frame_ready: false,
         }
+    }
+
+    pub fn sauve(&self, e: &mut Vec<u8>) {
+        e.octets(&self.vram);
+        e.octets(&self.oam);
+        e.octets(&[
+            self.lcdc,
+            self.stat,
+            self.scy,
+            self.scx,
+            self.ly,
+            self.lyc,
+            self.bgp,
+            self.obp0,
+            self.obp1,
+            self.wy,
+            self.wx,
+            self.mode,
+            self.window_line,
+        ]);
+        e.u32(self.dot);
+        e.u32(self.mode3_end);
+        e.bool(self.wy_hit);
+        e.bool(self.stat_line);
+        e.bool(self.frame_ready);
+        e.octets(&self.frame[..]);
+    }
+
+    /// Relit l'état ; refuse les combinaisons qui feraient sortir le rendu de l'écran.
+    pub fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        l.octets(&mut self.vram)?;
+        l.octets(&mut self.oam)?;
+        let mut r = [0u8; 13];
+        l.octets(&mut r)?;
+        [
+            self.lcdc,
+            self.stat,
+            self.scy,
+            self.scx,
+            self.ly,
+            self.lyc,
+            self.bgp,
+            self.obp0,
+            self.obp1,
+            self.wy,
+            self.wx,
+            self.mode,
+            self.window_line,
+        ] = r;
+        self.stat &= 0x78;
+        self.dot = l.u32()?;
+        self.mode3_end = l.u32()?;
+        self.wy_hit = l.bool()?;
+        self.stat_line = l.bool()?;
+        self.frame_ready = l.bool()?;
+        l.octets(&mut self.frame[..])?;
+        verifie(self.ly <= 153 && self.dot < 456 && self.mode <= 3, "PPU")?;
+        // Une ligne n'est rendue qu'en mode 2 visible (ou à l'allumage, LY = 0).
+        verifie(self.mode != 2 || self.ly < 144, "PPU mode")?;
+        verifie(self.lcd_on() || self.ly == 0, "PPU éteint")?;
+        verifie(self.window_line as u16 <= self.ly as u16 + 1, "PPU fenêtre")?;
+        verifie(self.frame.iter().all(|&t| t <= 3), "écran")
     }
 
     #[inline]

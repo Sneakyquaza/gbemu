@@ -1,6 +1,7 @@
 //! CPU SM83 : jeu d'instructions complet (+ préfixe CB), cycle par cycle machine.
 
 use crate::bus::Bus;
+use crate::etat::{Ecrit, ErreurEtat, Lecteur};
 
 const FZ: u8 = 0x80;
 const FN: u8 = 0x40;
@@ -51,6 +52,42 @@ impl Cpu {
             locked: false,
             ld_b_b: false,
         }
+    }
+
+    pub fn sauve(&self, e: &mut Vec<u8>) {
+        e.octets(&[
+            self.a, self.f, self.b, self.c, self.d, self.e, self.h, self.l,
+        ]);
+        e.u16(self.sp);
+        e.u16(self.pc);
+        for v in [
+            self.ime,
+            self.ei_pending,
+            self.halted,
+            self.halt_bug,
+            self.locked,
+            self.ld_b_b,
+        ] {
+            e.bool(v);
+        }
+    }
+
+    pub fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        let mut r = [0u8; 8];
+        l.octets(&mut r)?;
+        [
+            self.a, self.f, self.b, self.c, self.d, self.e, self.h, self.l,
+        ] = r;
+        self.f &= 0xF0;
+        self.sp = l.u16()?;
+        self.pc = l.u16()?;
+        self.ime = l.bool()?;
+        self.ei_pending = l.bool()?;
+        self.halted = l.bool()?;
+        self.halt_bug = l.bool()?;
+        self.locked = l.bool()?;
+        self.ld_b_b = l.bool()?;
+        Ok(())
     }
 
     #[inline]
