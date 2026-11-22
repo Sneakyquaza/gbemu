@@ -21,17 +21,19 @@ fn charge(rel: &str) -> Option<Gba> {
 }
 
 /// jsmolka : (ROM, résultat attendu). 0 = tout réussi ; sinon n° du 1er test raté connu.
-const JSMOLKA: [(&str, u32); 7] = [
+const JSMOLKA: [(&str, u32); 9] = [
     ("arm/arm.gba", 0),
     ("thumb/thumb.gba", 0),
     ("memory/memory.gba", 0),
     ("save/none.gba", 0),
     ("save/sram.gba", 0),
+    ("save/flash64.gba", 0),
+    ("save/flash128.gba", 0),
     ("nes/nes.gba", 0),
     // Lecture du BIOS après SWI : valeur propre au BIOS de Nintendo (0x188 + 8), jamais embarqué.
     ("bios/bios.gba", 2),
 ];
-// Hors liste : save/flash64 et flash128 (lot « sauvegardes »), unsafe (comportements non
+// Hors liste : unsafe (comportements non
 // vérifiés sur console), ppu/* (vérifiés à l'œil : pas d'image de référence).
 
 #[test]
@@ -128,5 +130,52 @@ fn armwrestler() {
     for (i, &(bad, ok)) in pages.iter().enumerate() {
         assert_eq!(bad, 0, "page {i} : lignes BAD");
         assert!(ok > 0, "page {i} : aucun OK (page non affichée ?)");
+    }
+}
+
+/// Sauvegarde d'état : rejouer depuis un état redonne exactement la même suite (écran et état),
+/// en moins d'une milliseconde.
+#[test]
+fn etats_aller_retour() {
+    for rel in [
+        "gba-tests/arm/arm.gba",
+        "gba-tests/save/flash128.gba",
+        "gba-tests/ppu/stripes.gba",
+        "fuzzarm/FuzzARM.gba",
+    ] {
+        let Some(mut gba) = charge(rel) else {
+            return;
+        };
+        for _ in 0..30 {
+            gba.run_frame();
+        }
+        // Meilleur temps sur 5 (machine partagée) : la sauvegarde rapide doit rester < 1 ms.
+        let mut duree_sauve = std::time::Duration::MAX;
+        let mut e = Vec::new();
+        for _ in 0..5 {
+            let t = std::time::Instant::now();
+            e = gba.save_state();
+            duree_sauve = duree_sauve.min(t.elapsed());
+        }
+        for _ in 0..60 {
+            gba.run_frame();
+        }
+        let (image, apres) = (gba.frame().to_vec(), gba.save_state());
+        let mut duree_charge = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let t = std::time::Instant::now();
+            gba.load_state(&e).unwrap();
+            duree_charge = duree_charge.min(t.elapsed());
+        }
+        for _ in 0..60 {
+            gba.run_frame();
+        }
+        assert_eq!(gba.frame(), &image[..], "{rel} : même écran");
+        assert!(gba.save_state() == apres, "{rel} : même état");
+        eprintln!(
+            "{rel} : {} Kio, sauvegarde {duree_sauve:?}, chargement {duree_charge:?}",
+            e.len() / 1024
+        );
+        assert!(duree_sauve.as_micros() < 1000 && duree_charge.as_micros() < 1000);
     }
 }

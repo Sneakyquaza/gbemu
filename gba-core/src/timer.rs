@@ -2,6 +2,8 @@
 //! déduit du cycle de départ, et seul le prochain débordement est un évènement.
 //! raccourci : pas le retard de 2 cycles au démarrage d'un timer, à ajouter si un test l'exige.
 
+use crate::etat::{verifie, Ecrit, ErreurEtat, Lecteur};
+
 const DECALAGE: [u32; 4] = [0, 6, 8, 10];
 
 #[derive(Clone, Copy, Default)]
@@ -148,6 +150,29 @@ impl Timers {
             })
             .min()
             .unwrap_or(u64::MAX);
+    }
+
+    pub(crate) fn sauve(&self, e: &mut Vec<u8>) {
+        for t in &self.t {
+            e.u16(t.reload);
+            e.u16(t.compteur);
+            e.u16(t.ctl);
+            e.u64(t.debut);
+        }
+    }
+
+    pub(crate) fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        let mut t = [Timer::default(); 4];
+        for x in &mut t {
+            x.reload = l.u16()?;
+            x.compteur = l.u16()?;
+            x.ctl = l.u16()?;
+            x.debut = l.u64()?;
+            verifie(x.ctl & !0xC7 == 0 && x.debut < 1 << 60, "timer")?;
+        }
+        self.t = t;
+        self.calcule_prochain();
+        Ok(())
     }
 }
 

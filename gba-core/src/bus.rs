@@ -7,6 +7,7 @@
 use crate::apu::Apu;
 use crate::cartouche::Cartouche;
 use crate::dma::{self, Dma};
+use crate::etat::{verifie, Ecrit, ErreurEtat, Lecteur};
 use crate::ppu::Ppu;
 use crate::timer::Timers;
 
@@ -243,6 +244,9 @@ impl Bus {
     #[inline]
     pub fn lit16(&mut self, a: u32, seq: bool) -> u16 {
         self.cout(a, seq, false);
+        if self.cart.est_eeprom(a) {
+            return self.cart.lit_eeprom();
+        }
         self.lit16_brut(a)
     }
 
@@ -347,6 +351,7 @@ impl Bus {
             5 => ecrit_le16(&mut self.ppu.pram, a as usize & 0x3FE, v),
             6 => ecrit_le16(&mut self.ppu.vram, vram_off(a & !1), v),
             7 => ecrit_le16(&mut self.ppu.oam, a as usize & 0x3FE, v),
+            0xD => self.cart.ecrit_rom16(a, v),
             0xE | 0xF => self.cart.ecrit_sram(a, (v >> ((a & 1) * 8)) as u8),
             _ => {}
         }
@@ -543,5 +548,70 @@ impl Bus {
             }
             self.calcule_prochain();
         }
+    }
+}
+
+// --- Sauvegarde d'état ---
+
+impl Bus {
+    /// Bus et modules (PPU, timers, DMA, son, cartouche). Le BIOS n'y est pas : il vient du lancement.
+    pub(crate) fn sauve(&self, e: &mut Vec<u8>) {
+        e.u64(self.cycles);
+        e.u32(self.bios_latch);
+        e.bool(self.dans_bios);
+        e.octets(&self.ewram);
+        e.octets(&self.iwram);
+        e.octets(&self.io);
+        e.u16(self.ie);
+        e.u16(self.if_);
+        e.bool(self.ime);
+        e.bool(self.halt);
+        e.u8(self.postflg);
+        e.u16(self.waitcnt);
+        e.u16(self.keyinput);
+        e.u16(self.keycnt);
+        e.u32(self.ouvert);
+        self.ppu.sauve(e);
+        self.timers.sauve(e);
+        self.dma.iter().for_each(|d| d.sauve(e));
+        self.apu.sauve(e);
+        self.cart.sauve(e);
+    }
+
+    /// En cas d'erreur, le bus peut être à moitié rechargé : l'appelant restaure l'état d'avant.
+    pub(crate) fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        self.cycles = l.u64()?;
+        verifie(self.cycles < 1 << 60, "cycles")?;
+        self.bios_latch = l.u32()?;
+        self.dans_bios = l.bool()?;
+        l.octets(&mut self.ewram)?;
+        l.octets(&mut self.iwram)?;
+        l.octets(&mut self.io)?;
+        self.ie = l.u16()?;
+        self.if_ = l.u16()?;
+        self.ime = l.bool()?;
+        self.halt = l.bool()?;
+        self.postflg = l.u8_max(1, "postflg")?;
+        self.waitcnt = l.u16()?;
+        verifie(self.waitcnt & !0x5FFF == 0, "waitcnt")?;
+        self.keyinput = l.u16()?;
+        self.keycnt = l.u16()?;
+        self.ouvert = l.u32()?;
+        self.ppu.charge(l)?;
+        // Évènement PPU toujours à moins d'une ligne : sinon le rattrapage serait sans fin.
+        verifie(
+            self.ppu.prochain.abs_diff(self.cycles) <= 1232,
+            "ppu prochain",
+        )?;
+        self.timers.charge(l)?;
+        for d in &mut self.dma {
+            *d = Dma::charge(l)?;
+        }
+        self.apu.charge(l)?;
+        verifie(self.apu.fait() <= self.cycles, "son")?;
+        self.cart.charge(l)?;
+        self.maj_attentes();
+        self.calcule_prochain();
+        Ok(())
     }
 }

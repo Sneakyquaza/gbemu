@@ -4,6 +4,7 @@
 //! prioritaire ; la valeur lue du BIOS ou d'une zone vide est le bus ouvert du CPU.
 
 use crate::bus::Bus;
+use crate::etat::{verifie, Ecrit, ErreurEtat, Lecteur};
 
 /// Masques d'adresse source / destination par canal.
 const MASQUE_SRC: [u32; 4] = [0x07FF_FFFF, 0x0FFF_FFFF, 0x0FFF_FFFF, 0x0FFF_FFFF];
@@ -136,6 +137,9 @@ impl Bus {
             _ => pas,
         };
         let (mut src, mut dst) = (d.src, d.dst);
+        if n == 3 {
+            self.cart.dma_eeprom(src, dst, d.compte);
+        }
         for i in 0..d.compte {
             let seq = i > 0;
             if mot {
@@ -163,6 +167,32 @@ impl Bus {
         } else {
             d.ctl &= !0x8000;
         }
+    }
+}
+
+impl Dma {
+    pub(crate) fn sauve(&self, e: &mut Vec<u8>) {
+        e.u32(self.sad);
+        e.u32(self.dad);
+        e.u16(self.cnt);
+        e.u16(self.ctl);
+        e.u32(self.src);
+        e.u32(self.dst);
+        e.u32(self.compte);
+    }
+
+    pub(crate) fn charge(l: &mut Lecteur) -> Result<Self, ErreurEtat> {
+        let d = Dma {
+            sad: l.u32()?,
+            dad: l.u32()?,
+            cnt: l.u16()?,
+            ctl: l.u16()?,
+            src: l.u32()?,
+            dst: l.u32()?,
+            compte: l.u32()?,
+        };
+        verifie(d.compte <= 0x10000, "dma")?;
+        Ok(d)
     }
 }
 

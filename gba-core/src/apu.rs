@@ -7,6 +7,7 @@
 //! que la console), et SOUNDCNT_X relu sans rattraper le PSG (état des canaux au dernier accès).
 
 use crate::bus::Bus;
+use crate::etat::{verifie, Ecrit, ErreurEtat, Lecteur};
 use gb_core::apu::Apu as Psg;
 
 /// Cycles GBA par cycle du moteur Game Boy.
@@ -189,6 +190,60 @@ impl Apu {
             }
         }
         self.psg.mix_gba((self.cnt_h & 3) as u8, g, d, self.biais);
+    }
+}
+
+// --- Sauvegarde d'état (lot sauvegardes) ---
+
+impl Apu {
+    /// Moteur Game Boy (état préfixé par sa longueur), cycle atteint, FIFO, SOUNDCNT_H, SOUNDBIAS.
+    pub(crate) fn sauve(&self, e: &mut Vec<u8>) {
+        let mut psg = Vec::new();
+        self.psg.sauve(&mut psg);
+        e.u32(psg.len() as u32);
+        e.octets(&psg);
+        e.u64(self.fait);
+        for f in &self.fifo {
+            e.octets(&f.buf.map(|v| v as u8));
+            e.u8(f.lecture as u8);
+            e.u8(f.n as u8);
+            e.u8(f.echantillon as u8);
+        }
+        e.u16(self.cnt_h);
+        e.u16(self.biais);
+    }
+
+    pub(crate) fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        let n = l.u32()? as usize;
+        verifie(n <= 4096, "son")?;
+        let mut psg = vec![0; n];
+        l.octets(&mut psg)?;
+        self.fait = l.u64()?;
+        for f in &mut self.fifo {
+            let mut buf = [0u8; 32];
+            l.octets(&mut buf)?;
+            f.buf = buf.map(|v| v as i8);
+            f.lecture = l.u8_max(31, "fifo")? as usize;
+            f.n = l.u8_max(32, "fifo")? as usize;
+            f.echantillon = l.u8()? as i8;
+        }
+        self.cnt_h = l.u16()?;
+        self.biais = l.u16()?;
+        verifie(
+            self.cnt_h & !0x770F == 0 && self.biais & !0xC3FE == 0,
+            "son",
+        )?;
+        // Réglages du mixage (hors état du moteur) d'abord : le mixage qu'ils déclenchent est
+        // ensuite écrasé par l'état relu du moteur.
+        self.maj_mix();
+        self.psg
+            .charge_etat(&psg)
+            .map_err(|_| ErreurEtat::Corrompu("son"))
+    }
+
+    /// Cycle GBA jusqu'où le son a été calculé (doit rester ≤ cycles du bus).
+    pub(crate) fn fait(&self) -> u64 {
+        self.fait
     }
 }
 

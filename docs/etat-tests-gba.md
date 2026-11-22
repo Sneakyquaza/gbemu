@@ -17,7 +17,7 @@ résultat en mode 4.
 | save/none | réussi |
 | save/sram | réussi |
 | bios | raté au test 2 : lecture du BIOS après SWI = 0xE3A02004 (octets du BIOS de Nintendo en 0x188, impossible avec un BIOS libre). Test 1 (valeur après démarrage 0xE129F000) réussi. Le test 3 (pendant une IRQ) demande lui aussi le BIOS de Nintendo. |
-| save/flash64, flash128 | ratés (flash64 : test 10 ; flash128 ne finit pas) : Flash non émulée, lot « sauvegardes » |
+| save/flash64, flash128 | réussis (ID Panasonic 32/1B et Sanyo 62/13, effacement puce/secteur, banques) |
 | unsafe | raté au test 1 (miroir SRAM 32 Kio) : comportement que le README dit faux sur console, non visé |
 | ppu/hello, shades, stripes | vérifiés à l'œil (pas d'image de référence) : texte « Hello world! » en mode 0, dégradé de bleus, rayures |
 
@@ -36,6 +36,23 @@ LDM/STM) et les 3 pages Thumb (ALU, LDR/STR, LDM/STM) : tout « OK », aucun « 
 - `src/dma.rs` : DMA immédiat 32 bits + IRQ, DMA HBlank répété avec rechargement de destination.
 - `tests/robustesse.rs` : ROM vide / trop grande / BIOS de mauvaise taille refusés ; ROM aléatoires
   (1 octet à 256 Kio) et écritures aléatoires dans toutes les E/S : aucune panique.
+
+## Sauvegardes cartouche (`gba-core/src/cartouche.rs`)
+Type par chaînes alignées (`SRAM_V`/`SRAM_F_V`, `FLASH_V`/`FLASH512_V`, `FLASH1M_V`, `EEPROM_V`) ;
+sans chaîne : SRAM 64 Kio, type repris de la taille du .sav importé (512 o / 8 Kio = EEPROM,
+128 Kio = Flash 128). EEPROM : taille fixée par la longueur du 1er DMA 3 (9/73 bits = 512 o,
+17/81 = 8 Kio), fenêtre 0x0DFFFF00 si ROM > 16 Mio. `Gba::sauvegarde()` = `None` tant que rien n'est
+à garder (type inconnu jamais écrit, EEPROM de taille inconnue). Tests unitaires : détection,
+EEPROM 512 o et 8 Kio (écriture/lecture série, aller-retour .sav, commande invalide), fenêtre des
+grandes ROM, repli par taille, tailles de .sav quelconques sans panique, Flash ID/banque/effacement.
+
+## Sauvegardes d'état (`gba-core/src/etat.rs`)
+En-tête `GBAE` + version 1 + CRC32 ROM, puis CPU et bus (PPU, timers, DMA, son : moteur gb-core +
+FIFO, cartouche). ~565 Kio (+ mémoire de sauvegarde) ; meilleur temps ~15-20 µs à la sauvegarde,
+~40 µs au chargement (release et debug, opt-level 3). Tests : `gba-headless/tests/roms.rs`
+`etats_aller_retour` (arm, flash128, stripes, FuzzARM : rejouer 60 images depuis l'état redonne
+le même écran et le même état), `gba-core/tests/etat.rs` (refus Format/Version/AutreRom/Taille sans
+changement, 300 états abîmés : refus propre ou exécution sans panique).
 
 ## Son (`gba-core/src/apu.rs`)
 Aucune ROM de test son GBA publique trouvée. Vérifié par :
@@ -58,4 +75,5 @@ cartouche approchée (lecture séquentielle ROM sans attente). Pas de délai de 
 ni des DMA, pas d'interruption d'un DMA par un autre. STOP traité comme HALT. C inchangé après MUL.
 Son : résolution PWM de SOUNDBIAS (bits 14-15) ignorée (sortie plus propre que la console),
 SOUNDCNT_X relu sans rattraper les canaux, rotation des banques d'onde pendant la lecture non
-émulée. Flash/EEPROM, série.
+émulée. Série. Sauvegardes : EEPROM toujours prête (pas de délai d'écriture), Flash écrite
+sans délai ni « bits seulement à 0 », recherche des chaînes alignée sur 4.

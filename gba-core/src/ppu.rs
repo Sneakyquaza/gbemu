@@ -244,3 +244,41 @@ impl Ppu {
         }
     }
 }
+
+// --- Sauvegarde d'état (lot sauvegardes ; le lot PPU y ajoute ses champs) ---
+
+use crate::etat::{verifie, Ecrit, ErreurEtat, Lecteur};
+
+impl Ppu {
+    pub(crate) fn sauve(&self, e: &mut Vec<u8>) {
+        e.octets(&self.vram);
+        e.octets(&self.pram);
+        e.octets(&self.oam);
+        self.regs.iter().for_each(|&v| e.u16(v));
+        e.u16(self.dispstat);
+        e.u16(self.vcount);
+        e.bool(self.en_hblank);
+        e.u64(self.prochain);
+        e.bool(self.frame_ready);
+        e.octets(&self.ecran);
+    }
+
+    pub(crate) fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        let mut p = Ppu::new();
+        l.octets(&mut p.vram)?;
+        l.octets(&mut p.pram)?;
+        l.octets(&mut p.oam)?;
+        for v in &mut p.regs {
+            *v = l.u16()?;
+        }
+        p.dispstat = l.u16()?;
+        p.vcount = l.u16_max(227, "vcount")?;
+        p.en_hblank = l.bool()?;
+        p.prochain = l.u64()?;
+        verifie(p.prochain < 1 << 60, "ppu")?;
+        p.frame_ready = l.bool()?;
+        l.octets(&mut p.ecran)?;
+        *self = p;
+        Ok(())
+    }
+}

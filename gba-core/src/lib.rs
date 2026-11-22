@@ -12,10 +12,14 @@ mod bus;
 mod cartouche;
 mod cpu;
 mod dma;
+mod etat;
 mod ppu;
 mod timer;
 
-pub use cartouche::ErreurChargement;
+use etat::Ecrit;
+
+pub use cartouche::{ErreurChargement, TypeSauvegarde};
+pub use etat::ErreurEtat;
 pub use ppu::{HAUTEUR, LARGEUR};
 
 /// BIOS de remplacement libre (16 Kio).
@@ -41,6 +45,8 @@ pub mod touche {
 pub struct Gba {
     cpu: cpu::Cpu,
     bus: bus::Bus,
+    /// CRC32 de la ROM (sauvegardes d'état).
+    crc: u32,
 }
 
 impl Gba {
@@ -60,7 +66,11 @@ impl Gba {
             bus.apres_bios();
             cpu::Cpu::new_direct(&mut bus)
         };
-        Ok(Gba { cpu, bus })
+        Ok(Gba {
+            cpu,
+            bus,
+            crc: etat::crc32(rom),
+        })
     }
 
     /// Exécute jusqu'au prochain début de VBlank (ligne 160).
@@ -137,5 +147,71 @@ impl Gba {
     /// Cycles écoulés depuis le démarrage.
     pub fn cycles(&self) -> u64 {
         self.bus.cycles
+    }
+
+    /// Type de sauvegarde de la cartouche (détecté par les chaînes de la ROM).
+    pub fn type_sauvegarde(&self) -> TypeSauvegarde {
+        self.bus.cart.type_sauvegarde()
+    }
+
+    /// Sauvegarde de la cartouche (.sav) ; `None` tant qu'il n'y a rien à écrire.
+    pub fn sauvegarde(&self) -> Option<Vec<u8>> {
+        self.bus.cart.sauvegarde()
+    }
+
+    /// Recharge un .sav (taille quelconque, jamais de panique ; voir `Cartouche`).
+    pub fn charger_sauvegarde(&mut self, data: &[u8]) {
+        self.bus.cart.charger_sauvegarde(data);
+    }
+
+    /// Sauvegarde instantanée : en-tête `GBAE`, version, CRC32 de la ROM, puis CPU et bus.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut e = Vec::with_capacity(640 * 1024);
+        e.octets(&etat::MAGIE);
+        e.u16(etat::VERSION);
+        e.u32(self.crc);
+        self.cpu.sauve(&mut e);
+        self.bus.sauve(&mut e);
+        e
+    }
+
+    /// Recharge un état de [`Gba::save_state`]. En cas d'erreur (autre ROM, version, données
+    /// tronquées ou corrompues), la console reste exactement dans son état précédent.
+    pub fn load_state(&mut self, data: &[u8]) -> Result<(), ErreurEtat> {
+        let mut l = etat::Lecteur::new(data);
+        let mut magie = [0u8; 4];
+        l.octets(&mut magie).map_err(|_| ErreurEtat::Format)?;
+        if magie != etat::MAGIE {
+            return Err(ErreurEtat::Format);
+        }
+        let v = l.u16()?;
+        if v != etat::VERSION {
+            return Err(ErreurEtat::Version(v));
+        }
+        if l.u32()? != self.crc {
+            return Err(ErreurEtat::AutreRom);
+        }
+        let avant = self.save_state();
+        let r = self
+            .cpu
+            .charge(&mut l)
+            .and_then(|_| self.bus.charge(&mut l))
+            .and_then(|_| {
+                if l.fini() {
+                    Ok(())
+                } else {
+                    Err(ErreurEtat::Taille)
+                }
+            });
+        if r.is_err() {
+            // Retour à l'état d'avant : il vient d'être produit, sa relecture ne peut pas échouer.
+            let mut l = etat::Lecteur::new(&avant[etat::TAILLE_ENTETE..]);
+            let ok = self
+                .cpu
+                .charge(&mut l)
+                .and_then(|_| self.bus.charge(&mut l));
+            debug_assert!(ok.is_ok());
+        }
+        r
     }
 }

@@ -7,6 +7,7 @@ mod arm;
 mod thumb;
 
 use crate::bus::Bus;
+use crate::etat::{Ecrit, ErreurEtat, Lecteur};
 
 pub const MODE_USR: u32 = 0x10;
 pub const MODE_FIQ: u32 = 0x11;
@@ -128,6 +129,42 @@ impl Cpu {
     /// Adresse de la prochaine instruction exécutée.
     pub fn pc(&self) -> u32 {
         self.r[15].wrapping_sub(if self.thumb() { 2 } else { 4 })
+    }
+
+    pub(crate) fn sauve(&self, e: &mut Vec<u8>) {
+        self.r.iter().for_each(|&v| e.u32(v));
+        e.u32(self.cpsr);
+        e.u32(self.spsr);
+        self.r13_14.iter().flatten().for_each(|&v| e.u32(v));
+        self.spsr_b.iter().for_each(|&v| e.u32(v));
+        self.r8_12_autre.iter().for_each(|&v| e.u32(v));
+        self.pipe.iter().for_each(|&v| e.u32(v));
+        e.bool(self.seq);
+    }
+
+    /// Les modes invalides tombent sur la banque utilisateur : aucune valeur n'est refusée.
+    pub(crate) fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+        let mut c = Self::vide();
+        for v in &mut c.r {
+            *v = l.u32()?;
+        }
+        c.cpsr = l.u32()?;
+        c.spsr = l.u32()?;
+        for v in c.r13_14.iter_mut().flatten() {
+            *v = l.u32()?;
+        }
+        for v in &mut c.spsr_b {
+            *v = l.u32()?;
+        }
+        for v in &mut c.r8_12_autre {
+            *v = l.u32()?;
+        }
+        for v in &mut c.pipe {
+            *v = l.u32()?;
+        }
+        c.seq = l.bool()?;
+        *self = c;
+        Ok(())
     }
 
     /// Vrai si la prochaine instruction est un saut sur elle-même (fin des ROM de test).

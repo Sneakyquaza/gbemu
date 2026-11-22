@@ -585,6 +585,14 @@ impl Apu {
         Ok(())
     }
 
+    /// Relit un état produit par [`Apu::sauve`] occupant tout `data` (pour gba-core).
+    /// En cas d'erreur, l'APU peut être à moitié rechargé : l'appelant restaure l'état d'avant.
+    pub fn charge_etat(&mut self, data: &[u8]) -> Result<(), ErreurEtat> {
+        let mut l = Lecteur::new(data);
+        self.charge(&mut l)?;
+        verifie(l.fini(), "APU")
+    }
+
     /// Octets de RAM d'onde sauvegardés (une banque sur Game Boy, deux sur GBA).
     fn taille_onde(&self) -> usize {
         if self.gba.is_some() {
