@@ -104,6 +104,14 @@ pub struct Config {
     pub ajouts: Vec<PathBuf>,
     pub palette: Palette,
     pub grille: bool,
+    /// Thème Jour (sinon Nuit).
+    pub jour: bool,
+    /// « Réduire les animations ».
+    pub animations_reduites: bool,
+    /// Sons d'interface coupés.
+    pub sons_coupes: bool,
+    /// Écran de démarrage désactivé.
+    pub sans_intro: bool,
     /// Avance rapide (ou ralenti) appliquée par Tab.
     pub vitesse: crate::jeu::Vitesse,
     /// Filtre de rémanence (mélange avec l'image précédente).

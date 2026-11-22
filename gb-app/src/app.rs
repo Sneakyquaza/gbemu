@@ -111,10 +111,11 @@ pub struct App {
     t_prec: f64,
     capture_demandee: bool,
     capture_faite: Arc<AtomicBool>,
-    hud: ecran_jeu::Hud,
+    hab: ecran_biblio::Habillage,
     touches: Touches,
     clavier: Clavier,
     ecran_touches: Option<ecran_touches::EcranTouches>,
+    hud: ecran_jeu::Hud,
 }
 
 fn reveil(ctx: &egui::Context) -> impl Fn() + Send + Sync + 'static {
@@ -212,6 +213,9 @@ impl App {
         let ctx = cc.egui_ctx.clone();
         let chemins = Chemins::trouver(opts.donnees.clone());
         let mut config = Config::charger(&chemins.config());
+        d::appliquer_theme(&ctx, config.jour);
+        d::reduire_mouvement(config.animations_reduites);
+        let hab = ecran_biblio::Habillage::new(&opts, &chemins, &config);
         if let Some(j) = &opts.jeux {
             config.dossier_jeux = Some(std::path::absolute(j).unwrap_or_else(|_| j.clone()));
         }
@@ -256,10 +260,11 @@ impl App {
             t_prec: 0.0,
             capture_demandee: false,
             capture_faite: Arc::new(AtomicBool::new(false)),
-            hud: Default::default(),
+            hab,
             touches: Touches::default(),
             clavier: Clavier::default(),
             ecran_touches: None,
+            hud: Default::default(),
         };
 
         if app.opts.demo {
@@ -374,6 +379,9 @@ impl App {
         if let Some(j) = &self.jaquettes {
             while let Ok((nom, img)) = j.rx.try_recv() {
                 if let Some(img) = img {
+                    self.hab
+                        .teintes
+                        .insert(nom.clone(), ecran_biblio::teinte_moyenne(&img.rgba));
                     let ci =
                         ColorImage::from_rgba_unmultiplied([img.largeur, img.hauteur], &img.rgba);
                     let t = self.ctx.load_texture(&nom, ci, TextureOptions::LINEAR);
@@ -469,6 +477,7 @@ impl App {
             })
             .map(|(i, _)| i)
             .collect();
+        self.affiner_vue();
         if !self.vue.is_empty() {
             self.sel = self.sel.min(self.vue.len() - 1);
         }
@@ -478,18 +487,6 @@ impl App {
         self.filtrer();
         self.sel = 0;
         self.defil_cible = 0.0;
-    }
-
-    fn changer_filtre(&mut self, sens: i32) {
-        let ordre = [
-            None,
-            Some(Plateforme::Gb),
-            Some(Plateforme::Gbc),
-            Some(Plateforme::Gba),
-        ];
-        let i = ordre.iter().position(|f| *f == self.filtre).unwrap_or(0) as i32;
-        self.filtre = ordre[(i + sens).rem_euclid(4) as usize];
-        self.changer_recherche();
     }
 
     // ----- Parties -----
@@ -511,11 +508,13 @@ impl App {
 
     fn lancer_partie(&mut self, rom: Rom, titre: String) {
         let sav = self.chemins.sauvegarde(&rom);
+        let crc = rom.crc;
         let etats = self.chemins.etats(&rom);
         // Vérification visuelle : pas de carte de reprise, sauf si c'est elle qu'on capture.
         let reprise = self.opts.capture.is_none() || self.opts.menu.as_deref() == Some("reprise");
         match Partie::lancer(rom, titre, sav, etats, reprise) {
             Ok(p) => {
+                self.hab.stats.lancer(crc);
                 self.fin_jeu();
                 self.partie = Some(p);
                 self.debut_jeu();
@@ -534,6 +533,7 @@ impl App {
         // Sauvegarde batterie et état « auto » écrits par `fin_jeu` (et `Drop` en secours).
         self.fin_jeu();
         self.partie = None;
+        self.hab.stats.arreter();
         self.menu = None;
         if let Some(a) = &self.audio {
             a.vider();
@@ -710,6 +710,9 @@ impl eframe::App for App {
             false
         };
 
+        if self.partie.is_some() && self.menu.is_none() {
+            self.hab.stats.compter(dt, maintenant);
+        }
         if self.partie.is_some() {
             self.dessiner_jeu(ui, rapide);
             if self.menu.is_none() {
@@ -726,6 +729,7 @@ impl eframe::App for App {
         }
         self.dessiner_toast(ui);
         self.dessiner_depot(ui);
+        self.dessiner_intro(ui, &evts, pad);
         if self.manettes.is_some() {
             // Les manettes se lisent par sondage : on repasse régulièrement.
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
@@ -735,6 +739,7 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.fin_jeu();
+        self.hab.stats.arreter();
     }
 
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {

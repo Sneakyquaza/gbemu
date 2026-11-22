@@ -15,11 +15,12 @@ impl App {
         if reste <= 0.0 {
             return;
         }
+        let jt = j();
         let a = reste.min(0.3) / 0.3;
         let ecran = ui.max_rect();
         let mut p = ui.painter().clone();
         p.multiply_opacity(a);
-        let g = ligne(&p, texte, moyen(15.0), TEXTE);
+        let g = ligne(&p, texte, moyen(15.0), jt.texte);
         let gs = g.size();
         let b = Rect::from_center_size(
             Pos2::new(
@@ -33,21 +34,21 @@ impl App {
                 offset: [0, 8],
                 blur: 24,
                 spread: 0,
-                color: Color32::from_black_alpha(90),
+                color: Color32::from_black_alpha(jt.ombre),
             }
             .as_shape(b, CornerRadius::same(21)),
         );
-        p.rect_filled(b, CornerRadius::same(21), SURFACE_HAUTE);
+        p.rect_filled(b, CornerRadius::same(21), jt.surface_haute);
         p.rect_stroke(
             b,
             CornerRadius::same(21),
-            Stroke::new(1.0, TRAIT),
+            Stroke::new(1.0, jt.trait_),
             StrokeKind::Inside,
         );
         p.galley(
             Pos2::new(b.left() + 18.0, b.center().y - gs.y * 0.5),
             g,
-            TEXTE,
+            jt.texte,
         );
         ui.ctx().request_repaint();
     }

@@ -8,11 +8,14 @@ mod console;
 mod dat;
 mod dessin;
 mod etats;
+mod intro;
 mod jaquettes;
 mod jeu;
 mod manette;
 mod rembobinage;
 mod sauve;
+mod sons_ui;
+mod stats;
 mod touches;
 
 use std::path::PathBuf;

@@ -34,6 +34,19 @@ impl Sortie {
         }
     }
 
+    /// Mélange des échantillons (sons d'interface) à ce qui est déjà en attente.
+    pub fn melanger(&self, ech: &[f32]) {
+        if let Ok(mut t) = self.tampon.lock() {
+            let n = t.len().min(ech.len()) & !1;
+            for (s, e) in t.iter_mut().zip(&ech[..n]) {
+                *s += e;
+            }
+            t.extend(ech[n..].iter().copied());
+            let trop = t.len().saturating_sub(TAMPON_MAX);
+            t.drain(..trop & !1);
+        }
+    }
+
     /// Échantillons en attente (G et D comptés séparément).
     pub fn remplissage(&self) -> usize {
         self.tampon.lock().map_or(0, |t| t.len())
