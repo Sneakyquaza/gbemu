@@ -2,12 +2,15 @@
 //! reconnus, mises en cache sur disque, décodées et réduites hors du fil de l'interface.
 
 use crate::biblio::Plateforme;
-use crate::dat::{agent, encoder_url, systeme};
+use crate::dat::{agent, encoder_url, perime, systeme};
 use std::collections::VecDeque;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
+
+/// Âge (jours) au-delà duquel une jaquette notée absente est redemandée.
+const JOURS_ABSENT: u64 = 30;
 
 /// Côté maximal d'une jaquette décodée (en pixels).
 const COTE_MAX: usize = 384;
@@ -73,7 +76,7 @@ fn boucle(
                 };
             }
         };
-        let img = obtenir(&agent, &dossier, p, &nom);
+        let img = obtenir(&agent, &dossier, p, &nom, crate::sauve::hors_ligne());
         if tx.send((nom, img)).is_err() {
             return;
         }
@@ -81,14 +84,21 @@ fn boucle(
     }
 }
 
-fn obtenir(agent: &ureq::Agent, dossier: &Path, p: Plateforme, nom: &str) -> Option<Image> {
+/// Jaquette en cache, sinon téléchargée (jamais `hors_ligne`).
+fn obtenir(
+    agent: &ureq::Agent,
+    dossier: &Path,
+    p: Plateforme,
+    nom: &str,
+    hors_ligne: bool,
+) -> Option<Image> {
     let fichier = nom_fichier(nom);
     let local = dossier.join(p.court()).join(format!("{fichier}.png"));
     let absent = local.with_extension("absent");
     if let Ok(d) = std::fs::read(&local) {
         return decoder(&d);
     }
-    if absent.exists() {
+    if hors_ligne || (absent.exists() && !perime(&absent, JOURS_ABSENT)) {
         return None;
     }
     let url = format!(
@@ -169,4 +179,17 @@ pub fn decoder(d: &[u8]) -> Option<Image> {
         hauteur: nh,
         rgba,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hors_ligne_rien_n_est_demande() {
+        let d = crate::sauve::DossierTest::new("jaquettes");
+        assert!(obtenir(&agent(), &d.0, Plateforme::Gb, "Jeu (France)", true).is_none());
+        // Aucun marqueur « absent » : la jaquette sera demandée une fois en ligne.
+        assert!(std::fs::read_dir(&d.0).unwrap().next().is_none());
+    }
 }

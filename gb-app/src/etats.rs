@@ -143,12 +143,13 @@ impl Etats {
             verrou: ancienne.is_some_and(|i| i.verrou),
         };
         let json = serde_json::to_vec(&info).unwrap_or_default();
-        // L'état en dernier : s'il manque, l'emplacement est vu vide (jamais à moitié écrit).
+        // L'état d'abord : s'il échoue (disque plein), la case garde son ancienne miniature et sa
+        // date, cohérentes avec l'ancien état.
+        ecrire_atomique(&self.etat(c), etat).map_err(ErreurEmplacement::Disque)?;
         if !mini.is_empty() {
             ecrire_atomique(&self.mini(c), mini).map_err(ErreurEmplacement::Disque)?;
         }
-        ecrire_atomique(&self.infos(c), &json).map_err(ErreurEmplacement::Disque)?;
-        ecrire_atomique(&self.etat(c), etat).map_err(ErreurEmplacement::Disque)
+        ecrire_atomique(&self.infos(c), &json).map_err(ErreurEmplacement::Disque)
     }
 
     pub fn verrouiller(&self, c: Cible, verrou: bool) -> io::Result<()> {
@@ -198,15 +199,16 @@ impl Etats {
 mod tests {
     use super::*;
 
-    fn dossier(nom: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("gbemu-test-etats-{nom}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+    use crate::sauve::DossierTest;
+
+    fn dossier(nom: &str) -> DossierTest {
+        DossierTest::new(&format!("etats-{nom}"))
     }
 
     #[test]
     fn emplacements_et_verrou() {
-        let e = Etats::new(dossier("verrou"));
+        let d = dossier("verrou");
+        let e = Etats::new(d.0.clone());
         assert!(e.info(Cible::Num(1)).is_none());
         e.ecrire(Cible::Num(1), b"un", b"mini", false).unwrap();
         assert_eq!(e.lire(Cible::Num(1)).unwrap(), b"un");
@@ -231,11 +233,11 @@ mod tests {
     #[test]
     fn ecriture_atomique_et_annulation() {
         let d = dossier("annule");
-        let e = Etats::new(d.clone());
+        let e = Etats::new(d.0.clone());
         e.ecrire(Cible::Num(3), b"ancien", b"m1", false).unwrap();
         e.ecrire(Cible::Num(3), b"nouveau", b"m2", false).unwrap();
         // Aucun fichier temporaire ne traîne.
-        let restes: Vec<_> = std::fs::read_dir(&d)
+        let restes: Vec<_> = std::fs::read_dir(&d.0)
             .unwrap()
             .filter_map(|f| f.ok())
             .filter(|f| f.file_name().to_string_lossy().ends_with(".tmp"))
@@ -252,13 +254,26 @@ mod tests {
     #[test]
     fn suppression_sans_perte() {
         let d = dossier("suppr");
-        let e = Etats::new(d.clone());
+        let e = Etats::new(d.0.clone());
         e.ecrire(Cible::Num(5), b"a", b"m", false).unwrap();
         e.ecrire(Cible::Num(5), b"b", b"m", false).unwrap();
         e.supprimer(Cible::Num(5)).unwrap();
         assert!(e.info(Cible::Num(5)).is_none());
         assert!(e.lire(Cible::Num(5)).is_none());
-        assert_eq!(std::fs::read(d.join("5.suppr")).unwrap(), b"b");
+        assert_eq!(std::fs::read(d.0.join("5.suppr")).unwrap(), b"b");
+    }
+
+    #[test]
+    fn etat_non_ecrit_garde_miniature_et_date() {
+        let d = dossier("echec");
+        let e = Etats::new(d.0.clone());
+        e.ecrire(Cible::Num(2), b"ancien", b"m1", false).unwrap();
+        let date = e.info(Cible::Num(2)).unwrap().date;
+        // Un dossier à la place du fichier d'état : son écriture échoue.
+        std::fs::create_dir_all(d.0.join("7.state")).unwrap();
+        assert!(e.ecrire(Cible::Num(7), b"x", b"m", false).is_err());
+        assert!(!d.0.join("7.mini.png").exists() && !d.0.join("7.info.json").exists());
+        assert_eq!(e.info(Cible::Num(2)).unwrap().date, date);
     }
 
     #[test]

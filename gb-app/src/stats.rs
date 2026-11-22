@@ -1,5 +1,6 @@
 //! Vie de la bibliothèque : favoris, temps de jeu et dernier lancement par jeu (clé : CRC32),
-//! dans `stats.json` (écriture atomique). Fichier absent ou abîmé : on repart de zéro.
+//! dans `stats.json` (écriture atomique). Fichier abîmé : copie `.bak` ; une entrée illisible
+//! est écartée seule ; rien de lisible : on repart de zéro.
 
 use crate::sauve;
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,7 @@ pub struct Jeu {
 #[serde(default)]
 struct Fichier {
     version: u32,
+    #[serde(deserialize_with = "sauve::carte_tolerante")]
     jeux: HashMap<u32, Jeu>,
 }
 
@@ -42,8 +44,7 @@ pub fn maintenant() -> u64 {
 
 impl Stats {
     pub fn charger(chemin: PathBuf) -> Stats {
-        let jeux = sauve::lire(&chemin)
-            .and_then(|d| serde_json::from_slice::<Fichier>(&d).ok())
+        let jeux = sauve::lire_json::<Fichier>(&chemin)
             .map(|f| f.jeux)
             .unwrap_or_default();
         Stats {
@@ -170,9 +171,8 @@ mod tests {
 
     #[test]
     fn aller_retour_et_fichier_abime() {
-        let d = std::env::temp_dir().join(format!("gbemu-stats-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
-        let c = d.join("stats.json");
+        let d = sauve::DossierTest::new("stats");
+        let c = d.0.join("stats.json");
         let mut s = Stats::charger(c.clone());
         s.lancer(7);
         s.compter(90.0, 1.0);
@@ -181,10 +181,20 @@ mod tests {
         let s2 = Stats::charger(c.clone());
         assert_eq!(s2.jeu(7).temps, 90.0);
         assert!(s2.jeu(7).favori && s2.jeu(7).dernier > 0);
+        // Fichier abîmé : la copie `.bak` (avant le dernier favori) est reprise.
         std::fs::write(&c, b"{pas du json").unwrap();
+        assert_eq!(Stats::charger(c.clone()).jeu(7).temps, 90.0);
         let _ = std::fs::remove_file(c.with_extension("bak"));
-        assert_eq!(Stats::charger(c).jeu(7), Jeu::default());
-        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(Stats::charger(c.clone()).jeu(7), Jeu::default());
+        // Une entrée illisible n'efface pas les autres.
+        std::fs::write(
+            &c,
+            br#"{"version":1,"jeux":{"7":{"temps":5.0},"8":{"temps":"long"},"x":{}}}"#,
+        )
+        .unwrap();
+        let s3 = Stats::charger(c);
+        assert_eq!(s3.jeu(7).temps, 5.0);
+        assert_eq!(s3.jeu(8), Jeu::default());
     }
 
     #[test]

@@ -1,11 +1,15 @@
 //! Reconnaissance des jeux : DAT No-Intro et années de sortie de libretro-database (CC BY-SA 4.0).
-//! Métadonnées seulement, téléchargées une fois au premier lancement puis lues depuis le cache.
+//! Métadonnées seulement, téléchargées au premier lancement puis lues depuis le cache (relues
+//! tous les 90 jours). Mode hors ligne : jamais de téléchargement.
 
 use crate::biblio::Plateforme;
 use std::collections::HashMap;
 use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
+
+/// Âge (jours) au-delà duquel un DAT en cache est téléchargé à nouveau.
+const JOURS_DAT: u64 = 90;
 
 const DEPOT: &str = "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat";
 
@@ -54,12 +58,36 @@ pub fn agent() -> ureq::Agent {
         .build()
 }
 
-/// Lit le fichier en cache ou le télécharge une fois. `None` si hors ligne.
-fn obtenir(agent: &ureq::Agent, dossier: &Path, sous: &str, p: Plateforme) -> Option<String> {
+/// Vrai si le fichier a été écrit il y a plus de `jours` jours.
+pub fn perime(chemin: &Path, jours: u64) -> bool {
+    std::fs::metadata(chemin)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|d| d > Duration::from_secs(jours * 86_400))
+}
+
+/// Lit le fichier en cache, ou le télécharge s'il manque ou est périmé (sauf `hors_ligne`).
+/// Téléchargement impossible : l'ancien cache sert. `None` si rien.
+fn obtenir(
+    agent: &ureq::Agent,
+    dossier: &Path,
+    sous: &str,
+    p: Plateforme,
+    hors_ligne: bool,
+) -> Option<String> {
     let local = dossier.join(sous).join(format!("{}.dat", systeme(p)));
-    if let Ok(t) = std::fs::read_to_string(&local) {
-        return Some(t);
+    let cache = std::fs::read_to_string(&local).ok();
+    if cache.is_some() && (hors_ligne || !perime(&local, JOURS_DAT)) {
+        return cache;
     }
+    if hors_ligne {
+        return None;
+    }
+    telecharger(agent, &local, sous, p).or(cache)
+}
+
+fn telecharger(agent: &ureq::Agent, local: &Path, sous: &str, p: Plateforme) -> Option<String> {
     let url = format!("{DEPOT}/{sous}/{}.dat", encoder_url(systeme(p)));
     let rep = agent.get(&url).call().ok()?;
     let mut texte = String::new();
@@ -67,19 +95,20 @@ fn obtenir(agent: &ureq::Agent, dossier: &Path, sous: &str, p: Plateforme) -> Op
     if !texte.contains("game (") {
         return None;
     }
-    let _ = crate::sauve::ecrire_atomique(&local, texte.as_bytes());
+    let _ = crate::sauve::ecrire_atomique(local, texte.as_bytes());
     Some(texte)
 }
 
 /// Charge (et télécharge si besoin) les trois plateformes.
 pub fn charger(dossier: &Path) -> Base {
     let agent = agent();
+    let hors_ligne = crate::sauve::hors_ligne();
     let mut base = Base::default();
     for p in [Plateforme::Gb, Plateforme::Gbc, Plateforme::Gba] {
-        if let Some(t) = obtenir(&agent, dossier, "no-intro", p) {
+        if let Some(t) = obtenir(&agent, dossier, "no-intro", p, hors_ligne) {
             lire_nointro(&t, p, &mut base);
         }
-        if let Some(t) = obtenir(&agent, dossier, "releaseyear", p) {
+        if let Some(t) = obtenir(&agent, dossier, "releaseyear", p, hors_ligne) {
             lire_annees(&t, &mut base);
         }
     }
@@ -253,5 +282,31 @@ game (
         assert_eq!(titre_lisible("Jeu, L' (France)"), "L'Jeu");
         assert_eq!(titre_lisible("Simple"), "Simple");
         assert_eq!(encoder_url("A & B"), "A%20%26%20B");
+    }
+
+    #[test]
+    fn hors_ligne_et_peremption() {
+        let d = crate::sauve::DossierTest::new("dat");
+        let a = agent();
+        // Hors ligne sans cache : rien, sans réseau.
+        assert!(obtenir(&a, &d.0, "no-intro", Plateforme::Gb, true).is_none());
+        let local =
+            d.0.join("no-intro")
+                .join(format!("{}.dat", systeme(Plateforme::Gb)));
+        crate::sauve::ecrire_atomique(&local, b"game ( )").unwrap();
+        assert!(!perime(&local, JOURS_DAT));
+        let vieux = std::time::SystemTime::now() - Duration::from_secs(91 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&local)
+            .unwrap()
+            .set_modified(vieux)
+            .unwrap();
+        assert!(perime(&local, JOURS_DAT));
+        // Périmé mais hors ligne : le cache sert.
+        assert_eq!(
+            obtenir(&a, &d.0, "no-intro", Plateforme::Gb, true).as_deref(),
+            Some("game ( )")
+        );
     }
 }

@@ -19,8 +19,9 @@ mod sons_ui;
 mod stats;
 mod touches;
 
+use std::io::Write as _;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 const AIDE: &str = "gbemu [--jeux DOSSIER] [--donnees DOSSIER] [--rom FICHIER.gb|.gbc|.gba]
   Vérification visuelle : [--demo] [--capture SORTIE.png] [--images N] [--taille LxH]
@@ -75,6 +76,13 @@ fn main() -> eframe::Result {
         }
     }
 
+    let donnees = sauve::Chemins::trouver(opts.donnees.clone()).donnees;
+    journal_plantage(donnees.join("crash.log"));
+    let _verrou = match sauve::verrou_instance(&donnees) {
+        Ok(v) => v,
+        Err(sauve::DejaOuvert) => return deja_ouvert(opts.capture.is_some()),
+    };
+
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("gbemu")
@@ -90,4 +98,64 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, opts)))),
     )
+}
+
+/// Panique : date, message, emplacement et pile ajoutés à `crash.log` (sans console, l'appli ne
+/// laisserait aucune trace). Sauvegarde d'urgence : la panique se déplie jusqu'à la fermeture
+/// de la partie (`Partie::drop` écrit la sauvegarde batterie).
+fn journal_plantage(chemin: PathBuf) {
+    let defaut = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let texte = format!(
+            "--- {} UTC, gbemu {}\n{info}\n{}\n",
+            sauve::horodatage(SystemTime::now()),
+            env!("CARGO_PKG_VERSION"),
+            std::backtrace::Backtrace::force_capture()
+        );
+        // Journal plafonné : repart de zéro au-delà de 1 Mio.
+        let trop = std::fs::metadata(&chemin).is_ok_and(|m| m.len() > 1 << 20);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(!trop)
+            .truncate(trop)
+            .open(&chemin)
+        {
+            let _ = f.write_all(texte.as_bytes());
+        }
+        defaut(info);
+    }));
+}
+
+/// Deuxième instance sur le même dossier de données : message clair puis sortie (les deux
+/// écraseraient leurs sauvegardes). `sans_fenetre` : vérification visuelle, message seul.
+fn deja_ouvert(sans_fenetre: bool) -> eframe::Result {
+    const MESSAGE: &str = "gbemu est déjà ouvert.\nUne seule fenêtre à la fois : deux fenêtres \
+                           écraseraient leurs sauvegardes.";
+    eprintln!("{MESSAGE}");
+    if sans_fenetre {
+        return Ok(());
+    }
+    let options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_title("gbemu")
+            .with_app_id("gbemu")
+            .with_inner_size([460.0, 120.0])
+            .with_resizable(false),
+        renderer: eframe::Renderer::Glow,
+        ..Default::default()
+    };
+    eframe::run_ui_native("gbemu", options, |ui, _| {
+        use eframe::egui;
+        ui.vertical_centered(|ui| {
+            ui.add_space(16.0);
+            ui.label(MESSAGE);
+            ui.add_space(12.0);
+            let touche =
+                ui.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter));
+            if ui.button("Fermer").clicked() || touche {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        });
+    })
 }

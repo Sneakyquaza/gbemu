@@ -155,16 +155,20 @@ fn mtime(meta: &std::fs::Metadata) -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Parcourt les sources (dossiers ou fichiers) et liste les fichiers candidats.
+/// Parcourt les sources (dossiers ou fichiers) et liste les fichiers candidats. Sous une
+/// source, les liens symboliques vers des dossiers ne sont pas suivis (boucles, doublons) et un
+/// fichier lié n'est compté qu'une fois.
 fn parcourir(sources: &[PathBuf], sortie: &mut Vec<(PathBuf, u64, u64)>) {
-    let mut pile: Vec<(PathBuf, u32)> = sources.iter().map(|s| (s.clone(), 0)).collect();
-    while let Some((chemin, prof)) = pile.pop() {
+    let mut pile: Vec<(PathBuf, u32, bool)> =
+        sources.iter().map(|s| (s.clone(), 0, false)).collect();
+    let mut vus = std::collections::HashSet::new();
+    while let Some((chemin, prof, lien)) = pile.pop() {
         let Ok(meta) = std::fs::metadata(&chemin) else {
             continue;
         };
         if meta.is_dir() {
-            // Garde-fou contre les liens circulaires et les arborescences démesurées.
-            if prof > 12 {
+            // Garde-fou contre les arborescences démesurées.
+            if prof > 12 || lien {
                 continue;
             }
             let Ok(lecture) = std::fs::read_dir(&chemin) else {
@@ -175,9 +179,27 @@ fn parcourir(sources: &[PathBuf], sortie: &mut Vec<(PathBuf, u64, u64)>) {
                 if nom.to_string_lossy().starts_with('.') {
                     continue;
                 }
-                pile.push((e.path(), prof + 1));
+                let lien = e.file_type().is_ok_and(|t| t.is_symlink());
+                pile.push((e.path(), prof + 1, lien));
             }
-        } else if genre(&chemin).is_some() && meta.len() <= TAILLE_MAX * 4 {
+        } else if let Some(g) = genre(&chemin) {
+            // ROM en vrac : refusée avant lecture ; archive : plusieurs ROM possibles.
+            let max = if matches!(g, Genre::Rom) {
+                TAILLE_MAX
+            } else {
+                TAILLE_MAX * 4
+            };
+            if meta.len() > max {
+                continue;
+            }
+            let cle = if lien {
+                std::fs::canonicalize(&chemin).unwrap_or_else(|_| chemin.clone())
+            } else {
+                chemin.clone()
+            };
+            if !vus.insert(cle) {
+                continue;
+            }
             sortie.push((chemin, meta.len(), mtime(&meta)));
         }
     }
@@ -312,9 +334,7 @@ pub fn lire_rom(rom: &Rom) -> io::Result<Vec<u8>> {
 }
 
 fn charger_index(chemin: &Path) -> Index {
-    std::fs::read(chemin)
-        .ok()
-        .and_then(|d| serde_json::from_slice::<Index>(&d).ok())
+    crate::sauve::lire_json::<Index>(chemin)
         .filter(|i| i.version == VERSION_INDEX)
         .unwrap_or_default()
 }
@@ -399,17 +419,22 @@ pub fn scanner(
         }
     }
 
-    let conteneurs: Vec<Conteneur> = resultat.into_iter().flatten().collect();
+    let mut conteneurs: Vec<Conteneur> = resultat.into_iter().flatten().collect();
     let roms: Vec<Rom> = conteneurs
         .iter()
         .flat_map(|c| c.roms.iter().cloned())
         .collect();
+    // Chemin non UTF-8 (Linux) : impossible en JSON ; seul ce fichier sera relu au lancement.
+    conteneurs.retain(|c| c.fichier.to_str().is_some());
     let index = Index {
         version: VERSION_INDEX,
         conteneurs,
     };
     if let Ok(json) = serde_json::to_vec(&index) {
-        let _ = crate::sauve::ecrire_atomique(&chemin_index, &json);
+        // Réécrit seulement si l'index a changé.
+        if std::fs::read(&chemin_index).ok().as_deref() != Some(&json[..]) {
+            let _ = crate::sauve::ecrire_atomique(&chemin_index, &json);
+        }
     }
     let _ = tx.send(MsgScan::Fini(roms));
     reveil();
@@ -456,5 +481,43 @@ mod tests {
         assert_eq!(lire_rom(&roms[0]).unwrap(), rom);
         let _ = std::fs::remove_file(&chemin);
         let _ = std::fs::remove_dir(&dossier);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn liens_et_tailles() {
+        use std::os::unix::fs::symlink;
+        let d = crate::sauve::DossierTest::new("liens");
+        let jeux = d.0.join("jeux");
+        std::fs::create_dir_all(jeux.join("sous")).unwrap();
+        std::fs::write(jeux.join("sous/a.gb"), [0u8; 0x8000]).unwrap();
+        // Boucle et doublon par liens.
+        symlink(&jeux, jeux.join("sous/boucle")).unwrap();
+        symlink(jeux.join("sous/a.gb"), jeux.join("lien.gb")).unwrap();
+        // ROM en vrac trop grande : écartée sans être lue.
+        let gros = std::fs::File::create(jeux.join("gros.gba")).unwrap();
+        gros.set_len(TAILLE_MAX + 1).unwrap();
+        let mut v = Vec::new();
+        parcourir(std::slice::from_ref(&jeux), &mut v);
+        assert_eq!(v.len(), 1);
+        // Index : un chemin non UTF-8 n'empêche pas l'écriture.
+        use std::os::unix::ffi::OsStrExt;
+        std::fs::write(
+            jeux.join(std::ffi::OsStr::from_bytes(b"caf\xe9.gb")),
+            [0u8; 0x8000],
+        )
+        .unwrap();
+        let index = d.0.join("index.json");
+        let (tx, rx) = std::sync::mpsc::channel();
+        scanner(vec![jeux.clone()], index.clone(), false, tx, || {});
+        let Some(MsgScan::Fini(roms)) = rx.try_iter().last() else {
+            panic!("pas de fin d'analyse");
+        };
+        assert_eq!(roms.len(), 2);
+        assert_eq!(charger_index(&index).conteneurs.len(), 1);
+        // Rien de changé : pas de réécriture (le `.bak` n'apparaît pas).
+        let (tx, _rx) = std::sync::mpsc::channel();
+        scanner(vec![jeux], index.clone(), false, tx, || {});
+        assert!(!index.with_extension("bak").exists());
     }
 }

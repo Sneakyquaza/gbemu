@@ -15,6 +15,11 @@ use std::path::PathBuf;
 const IPS: f64 = 59.7275;
 /// Intervalle de vérification de la sauvegarde batterie (secondes).
 const INTERVALLE_SAUVEGARDE: f64 = 2.0;
+/// Intervalle d'écriture de l'état « auto » en cours de partie (secondes) : filet si l'appli est
+/// tuée sans fermeture (signal, fin de session Windows).
+const INTERVALLE_AUTO: f64 = 60.0;
+/// Copies datées de la sauvegarde batterie gardées dans `sauvegardes/historique/`.
+const HISTORIQUE: usize = 5;
 /// Vitesse du rembobinage (×2 par rapport au jeu).
 const VITESSE_RECUL: f64 = 2.0;
 
@@ -64,6 +69,9 @@ pub struct Partie {
     chemin_sav: PathBuf,
     derniere_sav: Option<Vec<u8>>,
     t_sav: f64,
+    t_auto: Option<f64>,
+    /// Rembobinage en cours (la sauvegarde batterie est mise à l'abri à son début).
+    recul: bool,
     t_prec: Option<f64>,
     accumul: f64,
     pub images: u64,
@@ -105,6 +113,8 @@ impl Partie {
             crate::biblio::lire_rom(&rom).map_err(|e| format!("Lecture impossible : {e}"))?;
         let mut gb = Machine::new(&octets, rom.plateforme == crate::biblio::Plateforme::Gba)?;
         gb.set_sample_rate(crate::audio::FREQUENCE);
+        // Copie datée avant toute réécriture : un mauvais chargement d'état reste rattrapable.
+        let _ = sauve::historiser(&chemin_sav, HISTORIQUE);
         let derniere_sav = sauve::lire(&chemin_sav);
         if let Some(s) = &derniere_sav {
             gb.import_save(s);
@@ -122,6 +132,8 @@ impl Partie {
             chemin_sav,
             derniere_sav,
             t_sav: 0.0,
+            t_auto: None,
+            recul: false,
             t_prec: None,
             accumul: 0.0,
             images: 0,
@@ -152,8 +164,13 @@ impl Partie {
             .map_or(1.0 / 60.0, |t| (maintenant - t).clamp(0.0, 0.1));
         self.t_prec = Some(maintenant);
         if rembobiner {
+            if !self.recul {
+                self.recul = true;
+                self.proteger_sav();
+            }
             return self.reculer(dt);
         }
+        self.recul = false;
         // Asservissement léger sur le tampon son (±0,5 %, inaudible) : ni trou ni dérive.
         let normale = vitesse == 1.0;
         let mut v = vitesse;
@@ -183,6 +200,11 @@ impl Partie {
         if maintenant - self.t_sav >= INTERVALLE_SAUVEGARDE {
             self.t_sav = maintenant;
             self.sauver();
+        }
+        let t_auto = *self.t_auto.get_or_insert(maintenant);
+        if maintenant - t_auto >= INTERVALLE_AUTO {
+            self.t_auto = Some(maintenant);
+            self.ecrire_auto();
         }
         n > 0
     }
@@ -239,6 +261,23 @@ impl Partie {
         }
     }
 
+    /// Avant un chargement d'état ou un rembobinage (qui réécriront la sauvegarde batterie) :
+    /// écrit la sauvegarde courante et en garde une copie datée.
+    fn proteger_sav(&mut self) {
+        self.sauver();
+        let _ = sauve::historiser(&self.chemin_sav, HISTORIQUE);
+    }
+
+    /// État « auto » (reprise au lancement). Carte de reprise sans réponse : l'ancien est gardé.
+    fn ecrire_auto(&mut self) {
+        if self.reprise.is_none() && self.images > 0 {
+            let mini = self.mini();
+            let _ = self
+                .etats
+                .ecrire(Cible::Auto, &self.gb.save_state(), &mini, true);
+        }
+    }
+
     // ----- États -----
 
     /// Miniature PNG de l'écran courant.
@@ -273,6 +312,7 @@ impl Partie {
             });
         };
         let avant = self.gb.save_state();
+        self.proteger_sav();
         self.gb.load_state(&donnees).map_err(message)?;
         let mini = self.mini();
         // Après le chargement : si l'écriture échoue, l'état d'avant n'est perdu que du disque.
@@ -310,6 +350,7 @@ impl Partie {
         self.reprise = None;
         self.reprendre();
         if reprendre {
+            self.proteger_sav();
             let d = self
                 .etats
                 .lire(Cible::Auto)
@@ -330,12 +371,10 @@ impl Partie {
             "rembobinage : {} Kio en mémoire",
             self.rembob.octets() / 1024
         );
-        // Carte de reprise sans réponse : l'ancien état auto est gardé tel quel.
-        if self.reprise.is_none() && self.images > 0 {
-            let mini = self.mini();
-            let _ = self
-                .etats
-                .ecrire(Cible::Auto, &self.gb.save_state(), &mini, true);
+        // Plantage (fermeture pendant une panique) : la console est peut-être incohérente, seule
+        // la sauvegarde batterie est écrite ; l'état « auto » d'avant est gardé.
+        if !std::thread::panicking() {
+            self.ecrire_auto();
         }
     }
 }
@@ -343,5 +382,59 @@ impl Partie {
 impl Drop for Partie {
     fn drop(&mut self) {
         self.fermer();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sauve::DossierTest;
+
+    /// ROM synthétique MBC1 + RAM 8 Kio + pile (aucune ROM commerciale).
+    fn rom(d: &std::path::Path) -> Rom {
+        let mut o = vec![0u8; 0x8000];
+        o[0x147] = 0x03;
+        o[0x149] = 0x02;
+        let fichier = d.join("essai.gb");
+        std::fs::write(&fichier, &o).unwrap();
+        Rom {
+            fichier,
+            interne: None,
+            taille: o.len() as u64,
+            crc: crc32fast::hash(&o),
+            plateforme: crate::biblio::Plateforme::Gb,
+            titre_entete: String::new(),
+        }
+    }
+
+    fn historique(d: &std::path::Path) -> Vec<Vec<u8>> {
+        let mut v: Vec<_> = std::fs::read_dir(d.join("historique"))
+            .map(|l| l.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        v.sort();
+        v.iter().map(|p| std::fs::read(p).unwrap()).collect()
+    }
+
+    #[test]
+    fn sauvegarde_mise_a_l_abri_avant_chargement() {
+        let d = DossierTest::new("jeu");
+        let sav = d.0.join("Essai [0].sav");
+        std::fs::write(&sav, vec![1u8; 0x2000]).unwrap();
+        let mut p = Partie::lancer(
+            rom(&d.0),
+            "Essai".into(),
+            sav.clone(),
+            d.0.join("etats"),
+            false,
+        )
+        .unwrap();
+        // Copie datée faite au lancement.
+        assert_eq!(historique(&d.0), vec![vec![1u8; 0x2000]]);
+        p.sauver_etat(1).unwrap();
+        // Le jeu écrit en SRAM, puis on charge un vieil état par erreur.
+        p.gb.import_save(&[2u8; 0x2000]);
+        p.charger_etat(Cible::Num(1)).unwrap();
+        assert_eq!(std::fs::read(&sav).unwrap(), vec![2u8; 0x2000]);
+        assert_eq!(historique(&d.0).last().unwrap(), &vec![2u8; 0x2000]);
     }
 }
