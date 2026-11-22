@@ -148,7 +148,14 @@ impl Bus {
         l.octets(&mut self.hram)?;
         self.points = l.u64()?;
         self.apu_points = l.u64()?;
-        verifie(self.apu_points <= self.points, "cycles")?;
+        // Son en retard d'au plus quelques images (rattrapé à chaque fin d'image) ; compteur loin
+        // de tout débordement. Sinon `sync_apu` rattraperait des heures de son (gel).
+        verifie(
+            self.points < 1 << 60
+                && self.apu_points <= self.points
+                && self.points - self.apu_points <= 4 * crate::POINTS_PAR_IMAGE,
+            "cycles",
+        )?;
         self.svbk = l.u8_max(7, "SVBK")?;
         self.hdma_len = l.u8_max(0x7F, "HDMA")?;
         self.rp = l.u8()? & 0xC1;

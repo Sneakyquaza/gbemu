@@ -31,7 +31,7 @@ pub mod bouton {
 
 /// Cycles machine par image (70 224 points / 4) à vitesse normale (le double en double vitesse CGB).
 pub const CYCLES_PAR_IMAGE: u64 = 17_556;
-const POINTS_PAR_IMAGE: u64 = CYCLES_PAR_IMAGE * 4;
+pub(crate) const POINTS_PAR_IMAGE: u64 = CYCLES_PAR_IMAGE * 4;
 
 /// Registres CPU visibles (tests).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

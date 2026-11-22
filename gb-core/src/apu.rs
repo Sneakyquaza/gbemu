@@ -575,6 +575,17 @@ impl Apu {
         self.avant_div = l.u32()?;
         verifie(self.n_niv <= self.n && self.n <= CYCLES_PAR_S, "APU")?;
         verifie(self.phase < CYCLES_PAR_S, "APU")?;
+        // Niveaux de sortie (au plus 2 en GBA) et condensateur bornés, sommes sur `n` cycles :
+        // sinon les échantillons débordent en infini.
+        verifie(
+            [self.niv_g, self.niv_d, self.cond_g, self.cond_d]
+                .iter()
+                .all(|v| v.abs() <= 4.0)
+                && [self.somme_g, self.somme_d]
+                    .iter()
+                    .all(|v| v.abs() <= 4.0 * self.n as f32),
+            "APU niveaux",
+        )?;
         verifie((1..=2048).contains(&self.avant_div), "APU séquenceur")?;
         verifie(self.gba.is_some() || self.c3.pos < 32, "onde")?;
         if self.gba.is_some() {
@@ -626,7 +637,10 @@ impl Apu {
 
     /// Avance de `k` cycles machine : saute d'un événement au suivant (pas de canal, échantillon)
     /// et n'exécute cycle par cycle que les cycles où quelque chose se passe.
-    pub fn avance(&mut self, mut k: u64) {
+    pub fn avance(&mut self, k: u64) {
+        // Garde-fou : au plus 1 s rattrapée d'un coup (l'écart normal est de quelques images) ;
+        // un écart absurde ne peut pas figer l'émulation.
+        let mut k = k.min(CYCLES_PAR_S as u64);
         while k > 0 {
             let mut s = self
                 .attente

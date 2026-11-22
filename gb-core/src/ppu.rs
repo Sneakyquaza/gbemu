@@ -227,6 +227,7 @@ impl Ppu {
         }
         self.recalcule_palettes();
         verifie(self.ly <= 153 && self.dot < 456 && self.mode <= 3, "PPU")?;
+        verifie(self.mode3_end <= 252 + 7, "PPU mode 3")?;
         // Une ligne n'est rendue qu'en mode 2 visible (ou à l'allumage, LY = 0).
         verifie(self.mode != 2 || self.ly < 144, "PPU mode")?;
         verifie(self.lcd_on() || self.ly == 0, "PPU éteint")?;

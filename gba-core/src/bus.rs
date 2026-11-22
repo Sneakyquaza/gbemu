@@ -608,7 +608,12 @@ impl Bus {
             *d = Dma::charge(l)?;
         }
         self.apu.charge(l)?;
-        verifie(self.apu.fait() <= self.cycles, "son")?;
+        // Son en retard d'au plus quelques images : sinon le rattrapage figerait l'émulation.
+        verifie(
+            self.apu.fait() <= self.cycles
+                && self.cycles - self.apu.fait() <= 4 * crate::CYCLES_PAR_IMAGE,
+            "son",
+        )?;
         self.cart.charge(l)?;
         self.maj_attentes();
         self.calcule_prochain();
