@@ -1,8 +1,8 @@
-//! Outils communs à l'exécutable sans écran et aux tests ROM : PNG et conditions d'arrêt.
+//! Outils communs à l'exécutable sans écran et aux tests ROM : PNG, WAV et conditions d'arrêt.
 
 use gb_core::{GameBoy, HAUTEUR, LARGEUR};
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 /// Gris DMG (teinte 0 = blanc).
@@ -18,6 +18,32 @@ pub fn write_png(path: &Path, frame: &[u8]) -> Result<(), String> {
     enc.write_header()
         .and_then(|mut w| w.write_image_data(&px))
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Écrit des échantillons stéréo entrelacés (-1..1) en WAV PCM 16 bits.
+pub fn write_wav(path: &Path, samples: &[f32], rate: u32) -> Result<(), String> {
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    let mut w = BufWriter::new(File::create(path).map_err(err)?);
+    let data = (samples.len() * 2) as u32;
+    let mut h = Vec::with_capacity(44);
+    h.extend_from_slice(b"RIFF");
+    h.extend_from_slice(&(36 + data).to_le_bytes());
+    h.extend_from_slice(b"WAVEfmt ");
+    h.extend_from_slice(&16u32.to_le_bytes());
+    h.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    h.extend_from_slice(&2u16.to_le_bytes()); // stéréo
+    h.extend_from_slice(&rate.to_le_bytes());
+    h.extend_from_slice(&(rate * 4).to_le_bytes());
+    h.extend_from_slice(&4u16.to_le_bytes());
+    h.extend_from_slice(&16u16.to_le_bytes());
+    h.extend_from_slice(b"data");
+    h.extend_from_slice(&data.to_le_bytes());
+    w.write_all(&h).map_err(err)?;
+    for &x in samples {
+        let v = (x.clamp(-1.0, 1.0) * 32767.0) as i16;
+        w.write_all(&v.to_le_bytes()).map_err(err)?;
+    }
+    w.flush().map_err(err)
 }
 
 /// Lit un PNG 160×144 et le convertit en teintes 0-3 (par luminance).

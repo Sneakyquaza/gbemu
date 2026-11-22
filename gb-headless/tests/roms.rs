@@ -187,3 +187,60 @@ fn mooneye_acceptance_et_mbc1() {
         "régressions mooneye : {regressions:#?}"
     );
 }
+
+/// Sous-tests blargg dmg_sound qui échouent encore (voir docs/etat-tests.md).
+const DMG_SOUND_KO_CONNUS: &[&str] = &[];
+
+/// Résultat d'un test blargg à sortie mémoire : `None` si réussi, sinon le texte affiché.
+fn blargg_memoire(p: &Path, max_frames: u32) -> Option<String> {
+    let data = std::fs::read(p).ok()?;
+    let mut gb = GameBoy::new(&data).expect("ROM de test illisible");
+    run_until(&mut gb, max_frames, |gb| blargg_memory_status(gb).is_some());
+    (blargg_memory_status(&gb) != Some(0)).then(|| blargg_memory_text(&gb))
+}
+
+#[test]
+fn blargg_dmg_sound_complet() {
+    let p = roms().join("blargg/dmg_sound/dmg_sound.gb");
+    if !p.is_file() {
+        eprintln!(
+            "SAUTÉ : {} absent (lancer scripts/roms-test.sh)",
+            p.display()
+        );
+        return;
+    }
+    if let Some(t) = blargg_memoire(&p, 3600) {
+        panic!("dmg_sound :\n{t}");
+    }
+}
+
+#[test]
+fn blargg_dmg_sound() {
+    let base = roms().join("blargg/dmg_sound/rom_singles");
+    let Ok(rd) = std::fs::read_dir(&base) else {
+        eprintln!(
+            "SAUTÉ : {} absent (lancer scripts/roms-test.sh)",
+            base.display()
+        );
+        return;
+    };
+    let mut fichiers: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+    fichiers.sort();
+    let mut regressions = Vec::new();
+    for p in &fichiers {
+        let nom = p.file_name().unwrap().to_string_lossy().into_owned();
+        let echec = blargg_memoire(p, 1200);
+        let connu_ko = DMG_SOUND_KO_CONNUS.contains(&nom.as_str());
+        match echec {
+            None if connu_ko => {
+                eprintln!("NOUVEAU SUCCÈS : {nom} (à retirer de DMG_SOUND_KO_CONNUS)")
+            }
+            Some(t) if !connu_ko => regressions.push(format!("{nom} : {t}")),
+            _ => {}
+        }
+    }
+    assert!(
+        regressions.is_empty(),
+        "régressions dmg_sound : {regressions:#?}"
+    );
+}

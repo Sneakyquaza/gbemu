@@ -1,4 +1,4 @@
-# État des ROM de test (2026-11-22, étape 1 : cœur DMG)
+# État des ROM de test (2026-11-22, étapes 1 et 2a : cœur DMG + son)
 
 ROM téléchargées par `scripts/roms-test.sh` dans `roms/` (ignoré par git), vérifiées par `cargo test`.
 
@@ -10,6 +10,15 @@ ROM téléchargées par `scripts/roms-test.sh` dans `roms/` (ignoré par git), v
 | mem_timing (3/3) | réussi |
 | mem_timing-2 (3/3) | réussi (statut en $A000) |
 | dmg-acid2 | réussi (0 pixel différent de `reference-dmg.png`) |
+| dmg_sound (12/12 + ROM complète) | réussi (statut en $A000) |
+
+### dmg_sound (étape 2a, APU)
+Tests `blargg_dmg_sound` (chaque ROM de `rom_singles/`, liste des ratés attendus `DMG_SOUND_KO_CONNUS`, vide)
+et `blargg_dmg_sound_complet` (`dmg_sound.gb`).
+01-registers, 02-len ctr, 03-trigger, 04-sweep, 05-sweep details, 06-overflow on trigger,
+07-len sweep period sync, 08-len ctr during power, 09-wave read while on, 10-wave trigger while on,
+11-regs after power, 12-wave write while on : tous réussis.
+Écoute : `gb-headless roms/blargg/dmg_sound/dmg_sound.gb --frames 2400 --wav out/dmg_sound.wav` (bips finaux vers 34 s).
 
 ## mooneye-test-suite (mts-20260714) : 77 réussis / 103
 Périmètre : `acceptance/` + `emulator-only/` (MBC1, MBC2, MBC5). Le test `mooneye_acceptance_et_mbc1`
@@ -42,5 +51,6 @@ Périmètre : `acceptance/` + `emulator-only/` (MBC1, MBC2, MBC5). Le test `moon
 - MBC2 (7) : non pris en charge (hors brief)
 
 ## Performance
-Release, i7-7700, cpu_instrs sans limite : ~3 300 images/s (acid2 : ~4 400 images/s).
+Release, i7-7700, cpu_instrs sans limite : ~3 300 images/s à l'étape 1 ; avec l'APU (étape 2a) ~3 000 images/s
+(machine chargée, base mesurée en alternance à ~3 450), acid2 ~4 300 images/s.
 Mesure : `target/release/gb-headless roms/blargg/cpu_instrs/cpu_instrs.gb --frames 3000 --bench`.

@@ -16,7 +16,9 @@ pub struct Bus {
     hram: [u8; 0x7F],
     pub ppu: Ppu,
     timer: Timer,
-    apu: Apu,
+    pub apu: Apu,
+    /// Valeur de `cycles` jusqu'où l'APU a été exécuté (il avance par lots, voir `sync_apu`).
+    apu_cycles: u64,
     pub if_: u8,
     pub ie: u8,
     p1: u8,
@@ -37,13 +39,14 @@ pub struct Bus {
 
 impl Bus {
     pub fn new(cart: Cartridge) -> Self {
-        Bus {
+        let mut bus = Bus {
             cart,
             wram: [0; 0x2000],
             hram: [0; 0x7F],
             ppu: Ppu::new(),
             timer: Timer::new(),
             apu: Apu::new(),
+            apu_cycles: 0,
             if_: 0xE1,
             ie: 0,
             p1: 0x00,
@@ -58,7 +61,15 @@ impl Bus {
             dma_idx: 0,
             dma_start: None,
             cycles: 0,
-        }
+        };
+        bus.apu.recale_div(bus.timer.div);
+        bus
+    }
+
+    /// Rattrape les cycles son en attente (avant tout accès à l'APU).
+    pub fn sync_apu(&mut self) {
+        self.apu.avance(self.cycles - self.apu_cycles);
+        self.apu_cycles = self.cycles;
     }
 
     /// STOP et écriture de DIV : compteur interne remis à zéro.
@@ -121,6 +132,9 @@ impl Bus {
         // raccourci : seule l'OAM est bloquée pendant le DMA (pas de conflit de bus externe/VRAM).
         if self.dma_active && (0xFE00..0xFF00).contains(&addr) {
             return 0xFF;
+        }
+        if (0xFF10..0xFF40).contains(&addr) {
+            self.sync_apu();
         }
         self.read_raw(addr)
     }
@@ -215,12 +229,25 @@ impl Bus {
                 }
             }
             0xFF04..=0xFF07 => {
+                if addr == 0xFF04 {
+                    // Remise à zéro de DIV : front descendant si son bit 4 était à 1.
+                    self.sync_apu();
+                    if self.timer.div & 0x1000 != 0 {
+                        self.apu.frame_seq();
+                    }
+                }
                 if self.timer.write(addr, v) {
                     self.if_ |= IRQ_TIMER;
                 }
+                if addr == 0xFF04 {
+                    self.apu.recale_div(self.timer.div);
+                }
             }
             0xFF0F => self.if_ = v & 0x1F,
-            0xFF10..=0xFF3F => self.apu.write(addr, v),
+            0xFF10..=0xFF3F => {
+                self.sync_apu();
+                self.apu.write(addr, v);
+            }
             0xFF46 => {
                 self.dma_reg = v;
                 // Les sources E000-FFFF lisent la WRAM (C000-DFFF) sur DMG.

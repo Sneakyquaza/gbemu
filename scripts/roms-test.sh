@@ -10,7 +10,7 @@ mkdir -p "$ROMS"
 BLARGG_SHA=c240dd7d700e5c0b00a7bbba52b53e4ee67b5f15
 MTS=mts-20260714-0944-31510e1
 
-# blargg
+# blargg (cpu_instrs, instr_timing, mem_timing, mem_timing-2, dmg_sound…)
 if [ ! -d "$ROMS/blargg" ]; then
   d=$(mktemp -d "$ROMS/.dl_blargg.XXXX")
   curl -fsSL -o "$d/blargg.tar.gz" "https://github.com/retrio/gb-test-roms/archive/$BLARGG_SHA.tar.gz"
@@ -33,5 +33,7 @@ if [ ! -d "$ROMS/dmg-acid2" ]; then
   curl -fsSL -o "$d/reference-dmg.png" "https://raw.githubusercontent.com/mattcurrie/dmg-acid2/master/img/reference-dmg.png"
   mv "$d" "$ROMS/dmg-acid2"
 fi
+
+test -f "$ROMS/blargg/dmg_sound/dmg_sound.gb" || { echo "dmg_sound absent de $ROMS/blargg" >&2; exit 1; }
 
 echo "ROM de test prêtes dans $ROMS/ (archives téléchargées conservées dans $ROMS/.dl_*)."

@@ -1,4 +1,4 @@
-//! Cœur d'émulation Game Boy (DMG) : CPU SM83, bus, timer, PPU, cartouches MBC0/1/3/5.
+//! Cœur d'émulation Game Boy (DMG) : CPU SM83, bus, timer, PPU, cartouches MBC0/1/3/5, son.
 //! Aucune E/S : l'appelant fournit la ROM et les sauvegardes en octets et lit l'écran en mémoire.
 
 mod apu;
@@ -70,6 +70,7 @@ impl GameBoy {
             self.cpu.step(&mut self.bus);
         }
         self.bus.cart.advance_rtc(self.bus.cycles - start);
+        self.bus.sync_apu();
     }
 
     /// Exécute une instruction.
@@ -80,6 +81,18 @@ impl GameBoy {
     /// Écran : 160×144 teintes de 0 (blanc) à 3 (noir).
     pub fn frame(&self) -> &[u8] {
         &self.bus.ppu.frame[..]
+    }
+
+    /// Ajoute à `out` les échantillons son stéréo entrelacés (G, D) produits depuis le dernier appel.
+    /// Sans appel, au plus 1 s est gardée.
+    pub fn drain_samples(&mut self, out: &mut Vec<f32>) {
+        self.bus.sync_apu();
+        self.bus.apu.drain_samples(out);
+    }
+
+    /// Fréquence d'échantillonnage du son en Hz (48 000 par défaut, bornée à 8 000-192 000).
+    pub fn set_sample_rate(&mut self, hz: u32) {
+        self.bus.apu.set_sample_rate(hz);
     }
 
     /// Octets sortis par le port série depuis le démarrage.
