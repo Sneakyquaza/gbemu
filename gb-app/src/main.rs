@@ -6,9 +6,11 @@ mod audio;
 mod biblio;
 mod dat;
 mod dessin;
+mod etats;
 mod jaquettes;
 mod jeu;
 mod manette;
+mod rembobinage;
 mod sauve;
 
 use std::path::PathBuf;

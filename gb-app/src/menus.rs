@@ -111,10 +111,7 @@ impl App {
                 self.config.enregistrer(&self.chemins.config());
             }
             Act::Palette => {
-                self.config.palette = match self.config.palette {
-                    Palette::Verte => Palette::Grise,
-                    Palette::Grise => Palette::Verte,
-                };
+                self.config.palette = self.config.palette.suivante();
                 self.config.enregistrer(&self.chemins.config());
             }
             Act::PleinEcran => self.basculer_plein_ecran(),

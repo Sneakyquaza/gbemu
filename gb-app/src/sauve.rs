@@ -10,6 +10,15 @@ pub enum Palette {
     #[default]
     Verte,
     Grise,
+    /// Vert franc de la console d'origine.
+    Origine,
+    /// Gris neutres de la version de poche.
+    Poche,
+    /// Sarcelle rétroéclairée.
+    Lumiere,
+    Sepia,
+    /// Inversée douce.
+    Nuit,
 }
 
 impl Palette {
@@ -28,6 +37,36 @@ impl Palette {
                 [0x60, 0x60, 0x5C],
                 [0x1C, 0x1C, 0x1C],
             ],
+            Palette::Origine => [
+                [0x9B, 0xBC, 0x0F],
+                [0x8B, 0xAC, 0x0F],
+                [0x30, 0x62, 0x30],
+                [0x0F, 0x38, 0x0F],
+            ],
+            Palette::Poche => [
+                [0xC5, 0xC6, 0xB8],
+                [0x8C, 0x8D, 0x80],
+                [0x51, 0x52, 0x49],
+                [0x21, 0x22, 0x1D],
+            ],
+            Palette::Lumiere => [
+                [0x6B, 0xE8, 0xD4],
+                [0x3F, 0xB8, 0xA8],
+                [0x1E, 0x76, 0x74],
+                [0x0B, 0x33, 0x3A],
+            ],
+            Palette::Sepia => [
+                [0xF0, 0xE0, 0xC0],
+                [0xC0, 0x9C, 0x70],
+                [0x7A, 0x58, 0x3A],
+                [0x30, 0x20, 0x14],
+            ],
+            Palette::Nuit => [
+                [0x24, 0x26, 0x38],
+                [0x4E, 0x52, 0x74],
+                [0x9A, 0x9E, 0xC0],
+                [0xE4, 0xE2, 0xEE],
+            ],
         }
     }
 
@@ -35,6 +74,23 @@ impl Palette {
         match self {
             Palette::Verte => "Verte",
             Palette::Grise => "Grise",
+            Palette::Origine => "Origine",
+            Palette::Poche => "Poche",
+            Palette::Lumiere => "Lumière",
+            Palette::Sepia => "Sépia",
+            Palette::Nuit => "Nuit",
+        }
+    }
+
+    pub fn suivante(self) -> Palette {
+        match self {
+            Palette::Verte => Palette::Grise,
+            Palette::Grise => Palette::Origine,
+            Palette::Origine => Palette::Poche,
+            Palette::Poche => Palette::Lumiere,
+            Palette::Lumiere => Palette::Sepia,
+            Palette::Sepia => Palette::Nuit,
+            Palette::Nuit => Palette::Verte,
         }
     }
 }
@@ -48,6 +104,17 @@ pub struct Config {
     pub ajouts: Vec<PathBuf>,
     pub palette: Palette,
     pub grille: bool,
+    /// Avance rapide (ou ralenti) appliquée par Tab.
+    pub vitesse: crate::jeu::Vitesse,
+    /// Filtre de rémanence (mélange avec l'image précédente).
+    pub remanence: bool,
+    /// Effet rétroéclairé (palette éclaircie, halo).
+    pub retroeclaire: bool,
+    /// Volume du jeu, 0 à 1 (`None` : 100 %).
+    pub volume: Option<f32>,
+    pub muet: bool,
+    /// Palette choisie par jeu (CRC en hexadécimal).
+    pub palettes_jeux: std::collections::BTreeMap<String, Palette>,
 }
 
 pub struct Chemins {
@@ -111,6 +178,17 @@ impl Chemins {
         self.donnees
             .join("sauvegardes")
             .join(format!("{} [{:08X}].sav", nom.trim(), rom.crc))
+    }
+
+    /// Dossier des états d'une ROM (même nom que la sauvegarde batterie).
+    pub fn etats(&self, rom: &Rom) -> PathBuf {
+        let sav = self.sauvegarde(rom);
+        let nom = sav.file_stem().unwrap_or_default().to_os_string();
+        self.donnees.join("etats").join(nom)
+    }
+
+    pub fn captures(&self) -> PathBuf {
+        self.donnees.join("captures")
     }
 }
 

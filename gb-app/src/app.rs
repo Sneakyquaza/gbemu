@@ -7,7 +7,7 @@ use crate::biblio::{self, MsgScan, Plateforme, Rom};
 use crate::dat::{self, Base};
 use crate::dessin::{self as d, *};
 use crate::jaquettes::Jaquettes;
-use crate::jeu::{Partie, AVANCE};
+use crate::jeu::Partie;
 use crate::manette::{b, Etat, Manettes};
 use crate::sauve::{Chemins, Config, Palette};
 use eframe::egui::{
@@ -108,6 +108,7 @@ pub struct App {
     t_prec: f64,
     capture_demandee: bool,
     capture_faite: Arc<AtomicBool>,
+    hud: ecran_jeu::Hud,
 }
 
 fn reveil(ctx: &egui::Context) -> impl Fn() + Send + Sync + 'static {
@@ -249,6 +250,7 @@ impl App {
             t_prec: 0.0,
             capture_demandee: false,
             capture_faite: Arc::new(AtomicBool::new(false)),
+            hud: Default::default(),
         };
 
         if app.opts.demo {
@@ -491,9 +493,14 @@ impl App {
 
     fn lancer_partie(&mut self, rom: Rom, titre: String) {
         let sav = self.chemins.sauvegarde(&rom);
-        match Partie::lancer(rom, titre, sav) {
+        let etats = self.chemins.etats(&rom);
+        // Vérification visuelle : pas de carte de reprise, sauf si c'est elle qu'on capture.
+        let reprise = self.opts.capture.is_none() || self.opts.menu.as_deref() == Some("reprise");
+        match Partie::lancer(rom, titre, sav, etats, reprise) {
             Ok(p) => {
+                self.fin_jeu();
                 self.partie = Some(p);
+                self.debut_jeu();
                 self.debut_partie = self.t_prec;
                 self.attendre_relache = true;
                 self.menu = None;
@@ -506,7 +513,8 @@ impl App {
     }
 
     fn quitter_partie(&mut self) {
-        // La sauvegarde batterie est écrite par `Drop`.
+        // Sauvegarde batterie et état « auto » écrits par `fin_jeu` (et `Drop` en secours).
+        self.fin_jeu();
         self.partie = None;
         self.menu = None;
         if let Some(a) = &self.audio {
@@ -578,7 +586,8 @@ impl App {
         let jeu_pret = self
             .partie
             .as_ref()
-            .is_none_or(|p| p.images >= self.opts.images);
+            .is_none_or(|p| p.images >= self.opts.images || p.reprise.is_some());
+        self.preparer_capture(jeu_pret);
         // Menu pause : ouvert une fois l'image du jeu stable, capturé après son animation.
         if jeu_pret && self.partie.is_some() && self.opts.menu.as_deref() == Some("pause") {
             self.opts.menu = None;
@@ -700,9 +709,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        if let Some(p) = &mut self.partie {
-            p.sauver();
-        }
+        self.fin_jeu();
     }
 
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
