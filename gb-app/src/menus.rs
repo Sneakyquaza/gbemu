@@ -9,6 +9,8 @@ pub(super) enum GenreMenu {
     Reglages,
     /// Licences et à propos (texte défilant), ouvert depuis les réglages.
     Licences,
+    /// Identifiants ScreenScraper (résumés, notes, logos), ouvert depuis les réglages.
+    Metadonnees,
 }
 
 /// Licences des polices, du BIOS libre, des données et des bibliothèques (aussi livré à côté
@@ -34,14 +36,22 @@ enum Act {
     Touches,
     HorsLigne,
     Licences,
+    Metadonnees,
+    SsUtilisateur,
+    SsMotDePasse,
+    SsDevId,
+    SsDevMotDePasse,
+    /// Ligne d'état du client ScreenScraper (sans action).
+    SsEtat,
+    RetourReglages,
     Fermer,
 }
 
 pub(super) struct Menu {
     genre: GenreMenu,
     sel: usize,
-    /// Saisie en cours du chemin du dossier des jeux.
-    edition: Option<String>,
+    /// Saisie en cours (chemin du dossier des jeux, identifiants ScreenScraper).
+    edition: Option<(Act, String)>,
     /// Instant d'ouverture (animations d'entrée).
     ouvert_a: f64,
     /// Défilement du texte des licences (points).
@@ -153,8 +163,69 @@ impl App {
                     oui_non(self.config.hors_ligne),
                     Act::HorsLigne,
                 ));
+                v.push((
+                    "Métadonnées".into(),
+                    Some("ScreenScraper".into()),
+                    Act::Metadonnees,
+                ));
                 v.push(("Licences et à propos".into(), None, Act::Licences));
                 v.push(("Fermer".into(), None, Act::Fermer));
+            }
+            GenreMenu::Metadonnees => {
+                let s = &self.ss_saisis;
+                let texte = |t: &str| {
+                    Some(if t.trim().is_empty() {
+                        "Non renseigné".to_string()
+                    } else {
+                        t.trim().to_string()
+                    })
+                };
+                let masque = |t: &str| {
+                    Some(if t.is_empty() {
+                        "Non renseigné".to_string()
+                    } else {
+                        "•".repeat(8)
+                    })
+                };
+                v.push((
+                    "Identifiant ScreenScraper".into(),
+                    texte(&s.utilisateur),
+                    Act::SsUtilisateur,
+                ));
+                v.push((
+                    "Mot de passe".into(),
+                    masque(&s.mot_de_passe),
+                    Act::SsMotDePasse,
+                ));
+                let fichier = self.ss_id.dev_de_fichier(s);
+                let dev = |t: &str, f: &dyn Fn(&str) -> Option<String>| {
+                    if fichier {
+                        Some(format!("Depuis {}", crate::screenscraper::FICHIER_DEV))
+                    } else {
+                        f(t)
+                    }
+                };
+                v.push((
+                    "Identifiant développeur".into(),
+                    dev(&s.devid, &texte),
+                    Act::SsDevId,
+                ));
+                v.push((
+                    "Mot de passe développeur".into(),
+                    dev(&s.devpassword, &masque),
+                    Act::SsDevMotDePasse,
+                ));
+                let etat = if !self.ss_id.actif() {
+                    "Inactif : identifiants développeur manquants"
+                } else if self.config.hors_ligne {
+                    "Coupé : mode hors ligne"
+                } else if self.ss_id.utilisateur.trim().is_empty() {
+                    "Prêt, sans compte (quota réduit)"
+                } else {
+                    "Prêt"
+                };
+                v.push(("État".into(), Some(etat.into()), Act::SsEtat));
+                v.push(("Retour".into(), None, Act::RetourReglages));
             }
         }
         v
@@ -192,7 +263,7 @@ impl App {
                 {
                     let texte = self.dossier_jeux().display().to_string();
                     if let Some(m) = &mut self.menu {
-                        m.edition = Some(texte);
+                        m.edition = Some((act, texte));
                     }
                 }
             }
@@ -245,11 +316,52 @@ impl App {
                 self.config.enregistrer(&self.chemins.config());
             }
             Act::Licences => self.ouvrir_menu(GenreMenu::Licences),
+            Act::Metadonnees => self.ouvrir_menu(GenreMenu::Metadonnees),
+            Act::RetourReglages => {
+                self.ouvrir_menu(GenreMenu::Reglages);
+                let k = self
+                    .elements(GenreMenu::Reglages)
+                    .iter()
+                    .position(|e| e.2 == Act::Metadonnees);
+                if let (Some(m), Some(k)) = (&mut self.menu, k) {
+                    m.sel = k;
+                }
+            }
+            Act::SsUtilisateur | Act::SsMotDePasse | Act::SsDevId | Act::SsDevMotDePasse => {
+                // Le texte en clair n'est jamais repris dans le champ : on retape tout.
+                let s = &self.ss_saisis;
+                let texte = match act {
+                    Act::SsUtilisateur => s.utilisateur.clone(),
+                    Act::SsDevId => s.devid.clone(),
+                    _ => String::new(),
+                };
+                if let Some(m) = &mut self.menu {
+                    m.edition = Some((act, texte));
+                }
+            }
+            Act::SsEtat => {}
             Act::Touches => {
                 let genre = self.menu.take().map(|m| m.genre);
                 self.ouvrir_touches(genre);
             }
         }
+    }
+
+    /// Enregistre un identifiant ScreenScraper saisi ; les réponses refusées sont redemandées.
+    fn saisir_ss(&mut self, act: Act, t: String) {
+        let s = &mut self.ss_saisis;
+        match act {
+            Act::SsUtilisateur => s.utilisateur = t.trim().to_string(),
+            Act::SsMotDePasse => s.mot_de_passe = t,
+            Act::SsDevId => s.devid = t.trim().to_string(),
+            Act::SsDevMotDePasse => s.devpassword = t,
+            _ => return,
+        }
+        if self.ss_saisis.enregistrer(&self.chemins.donnees).is_err() {
+            self.dire("Impossible d'enregistrer les identifiants");
+        }
+        self.ss_id = Identifiants::charger(&self.chemins.donnees);
+        self.ss_fiches.retain(|_, r| r.is_ok());
     }
 
     fn choisir_dossier(&mut self, d: PathBuf) {
@@ -294,7 +406,7 @@ impl App {
         // Saisie d'un chemin : le texte va dans le champ.
         if self.menu.as_ref().is_some_and(|m| m.edition.is_some()) {
             let mut fini: Option<bool> = None;
-            if let Some(texte) = self.menu.as_mut().and_then(|m| m.edition.as_mut()) {
+            if let Some((_, texte)) = self.menu.as_mut().and_then(|m| m.edition.as_mut()) {
                 for e in evts {
                     match e {
                         Event::Text(t) | Event::Paste(t) => {
@@ -316,11 +428,15 @@ impl App {
             }
             if let Some(ok) = fini {
                 let texte = self.menu.as_mut().and_then(|m| m.edition.take());
-                if let (true, Some(t)) = (ok, texte) {
-                    let t = t.trim();
-                    if !t.is_empty() {
-                        self.choisir_dossier(PathBuf::from(t));
+                match (ok, texte) {
+                    (true, Some((Act::DossierJeux, t))) => {
+                        let t = t.trim();
+                        if !t.is_empty() {
+                            self.choisir_dossier(PathBuf::from(t));
+                        }
                     }
+                    (true, Some((act, t))) => self.saisir_ss(act, t),
+                    _ => {}
                 }
             }
             return;
@@ -344,13 +460,18 @@ impl App {
                     }
                     Key::Enter | Key::Space => valider = true,
                     Key::Escape | Key::F2 => retour = true,
+                    Key::Backspace if genre == GenreMenu::Metadonnees => retour = true,
                     _ => {}
                 }
             }
         }
         if retour {
             self.son(Son::Retour);
-            self.agir(Act::Fermer);
+            self.agir(if genre == GenreMenu::Metadonnees {
+                Act::RetourReglages
+            } else {
+                Act::Fermer
+            });
             return;
         }
         let Some(m) = &mut self.menu else { return };
@@ -425,13 +546,24 @@ impl App {
         d::ombre(&p, r, 18.0, 18.0, 48.0, 1.0);
         panneau(&p, r, 18.0, jt.surface, Some(jt.trait_));
 
-        let (titre, sous) = (
-            "Réglages".to_string(),
-            "Bibliothèque, affichage et confort".to_string(),
-        );
+        let (titre, sous) = if genre == GenreMenu::Metadonnees {
+            (
+                "Métadonnées".to_string(),
+                "Résumés, notes et logos ScreenScraper. Identifiants gardés sur ce PC, envoyés seulement à screenscraper.fr.".to_string(),
+            )
+        } else {
+            (
+                "Réglages".to_string(),
+                "Bibliothèque, affichage et confort".to_string(),
+            )
+        };
         let g = ligne(&p, &titre, gras(22.0), jt.texte);
         p.galley(Pos2::new(r.left() + 28.0, r.top() + 24.0), g, jt.texte);
-        let g = bloc(&p, &sous, regulier(14.0), jt.doux, l - 56.0, 1);
+        let g = if genre == GenreMenu::Metadonnees {
+            bloc(&p, &sous, regulier(13.0), jt.doux, l - 56.0, 2)
+        } else {
+            bloc(&p, &sous, regulier(14.0), jt.doux, l - 56.0, 1)
+        };
         p.galley(Pos2::new(r.left() + 28.0, r.top() + 56.0), g, jt.doux);
 
         // Une seule surbrillance : la souris qui bouge déplace la sélection.
@@ -472,8 +604,18 @@ impl App {
                 g,
                 jt.texte,
             );
-            let edite = choisi && *act == Act::DossierJeux && edition.is_some();
-            let valeur = if edite { edition.clone() } else { val.clone() };
+            let edite = choisi && edition.as_ref().is_some_and(|(a, _)| a == act);
+            let valeur = if edite {
+                edition.as_ref().map(|(a, t)| {
+                    if matches!(a, Act::SsMotDePasse | Act::SsDevMotDePasse) {
+                        "•".repeat(t.chars().count())
+                    } else {
+                        t.clone()
+                    }
+                })
+            } else {
+                val.clone()
+            };
             if let Some(v) = valeur {
                 let max = re.width() - gl - 54.0;
                 let col = if edite { jt.texte } else { jt.doux };

@@ -6,10 +6,11 @@ use crate::audio::Sortie;
 use crate::biblio::{self, MsgScan, Plateforme, Rom};
 use crate::dat::{self, Base};
 use crate::dessin::{self as d, *};
-use crate::jaquettes::Jaquettes;
+use crate::jaquettes::{Jaquettes, Vignette};
 use crate::jeu::Partie;
 use crate::manette::{b, Etat, Manettes};
 use crate::sauve::{Chemins, Config, Palette};
+use crate::screenscraper::{FicheSs, Identifiants, ScreenScraper};
 use crate::touches::{Action, Clavier, Touches};
 use eframe::egui::{
     self, Color32, ColorImage, CornerRadius, Event, Id, Key, Pos2, Rect, Sense, Stroke, StrokeKind,
@@ -24,6 +25,8 @@ use std::time::Instant;
 
 #[path = "ecran_biblio.rs"]
 mod ecran_biblio;
+#[path = "ecran_fiche.rs"]
+mod ecran_fiche;
 #[path = "ecran_jeu.rs"]
 mod ecran_jeu;
 #[path = "ecran_touches.rs"]
@@ -56,6 +59,10 @@ struct Fiche {
     details: String,
     dat: Option<(Plateforme, String)>,
     cle: String,
+    /// Métadonnées pour le tri et les filtres (vides si le jeu n'est pas reconnu).
+    annee: Option<u16>,
+    editeur: String,
+    genre: String,
 }
 
 const MARGE: f32 = 36.0;
@@ -100,6 +107,16 @@ pub struct App {
     ligne_h: f32,
     /// Barre de défilement saisie : écart entre le pointeur et le haut de la poignée.
     prise_barre: Option<f32>,
+    /// Filtre « même éditeur / genre / année » choisi depuis une fiche.
+    filtre_meta: Option<(ecran_fiche::Champ, String)>,
+    /// Fiche détaillée ouverte sur le jeu sélectionné.
+    panneau: Option<ecran_fiche::Panneau>,
+    ss: Option<ScreenScraper>,
+    /// Identifiants ScreenScraper saisis (réenregistrés) et effectifs (avec le fichier dev).
+    ss_saisis: Identifiants,
+    ss_id: Identifiants,
+    /// Réponses ScreenScraper reçues pendant la session, par CRC.
+    ss_fiches: HashMap<u32, Result<FicheSs, String>>,
 
     partie: Option<Partie>,
     debut_partie: f64,
@@ -272,6 +289,12 @@ impl App {
             vue_h: 0.0,
             ligne_h: 1.0,
             prise_barre: None,
+            filtre_meta: None,
+            panneau: None,
+            ss: None,
+            ss_saisis: Identifiants::default(),
+            ss_id: Identifiants::default(),
+            ss_fiches: HashMap::new(),
             partie: None,
             debut_partie: 0.0,
             tex_ecran: None,
@@ -295,6 +318,7 @@ impl App {
 
         if app.opts.demo {
             app.roms = roms_demo();
+            app.base = Some(ecran_fiche::base_demo(&app.roms));
             app.analyse_finie = true;
         } else {
             let _ = std::fs::create_dir_all(app.dossier_jeux());
@@ -303,12 +327,23 @@ impl App {
         let (tx, rx) = channel();
         let dossier_dat = app.chemins.dat();
         let r = reveil(&ctx);
+        // Les noms d'abord (cartes lisibles au plus vite), le reste des métadonnées ensuite.
         std::thread::spawn(move || {
-            let _ = tx.send(dat::charger(&dossier_dat));
+            let mut base = dat::charger(&dossier_dat);
+            let _ = tx.send(base.clone());
+            r();
+            dat::completer(&dossier_dat, &mut base);
+            let _ = tx.send(base);
             r();
         });
         app.rx_base = Some(rx);
         app.jaquettes = Some(Jaquettes::lancer(app.chemins.jaquettes(), reveil(&ctx)));
+        app.ss_saisis = Identifiants::saisis(&app.chemins.donnees);
+        app.ss_id = Identifiants::charger(&app.chemins.donnees);
+        app.ss = Some(ScreenScraper::lancer(
+            app.chemins.cache.join("screenscraper"),
+            reveil(&ctx),
+        ));
 
         if let Some(chemin) = app.opts.rom.clone() {
             // `--rom` / « Ouvrir avec » : même analyse que la bibliothèque (64 Mio au plus,
@@ -333,6 +368,7 @@ impl App {
         match app.opts.menu.as_deref() {
             Some("reglages") => app.ouvrir_menu(GenreMenu::Reglages),
             Some("licences") => app.ouvrir_menu(GenreMenu::Licences),
+            Some("metadonnees") => app.ouvrir_menu(GenreMenu::Metadonnees),
             _ => {}
         }
         app.touches = Touches::charger(&Touches::chemin(&app.chemins.donnees));
@@ -399,25 +435,46 @@ impl App {
             }
         }
         if let Some(rx) = &self.rx_base {
-            if let Ok(base) = rx.try_recv() {
-                self.base = Some(base);
-                self.vue_sale = true;
-                self.rx_base = None;
+            loop {
+                match rx.try_recv() {
+                    // Démonstration : la base fictive reste.
+                    Ok(base) => {
+                        if !self.opts.demo {
+                            self.base = Some(base);
+                            self.vue_sale = true;
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.rx_base = None;
+                        break;
+                    }
+                }
             }
         }
         if let Some(j) = &self.jaquettes {
             while let Ok((nom, img)) = j.rx.try_recv() {
                 if let Some(img) = img {
-                    self.hab
-                        .teintes
-                        .insert(nom.clone(), ecran_biblio::teinte_moyenne(&img.rgba));
+                    // Écrans titre et captures : pixels nets ; jaquettes : halo de leur teinte.
+                    let pixels = nom.starts_with("titre:") || nom.starts_with("capture:");
+                    if !pixels {
+                        self.hab
+                            .teintes
+                            .insert(nom.clone(), ecran_biblio::teinte_moyenne(&img.rgba));
+                    }
                     let ci =
                         ColorImage::from_rgba_unmultiplied([img.largeur, img.hauteur], &img.rgba);
-                    let t = self.ctx.load_texture(&nom, ci, TextureOptions::LINEAR);
+                    let opt = if pixels {
+                        TextureOptions::NEAREST
+                    } else {
+                        TextureOptions::LINEAR
+                    };
+                    let t = self.ctx.load_texture(&nom, ci, opt);
                     self.textures.insert(nom, (t, self.images_ui));
                 }
             }
         }
+        self.recevoir_ss();
     }
 
     fn reconstruire(&mut self) {
@@ -441,6 +498,10 @@ impl App {
                         .map(|f| f.to_string_lossy().into_owned())
                         .unwrap_or_default(),
                 };
+                let (annee, editeur, genre) = info
+                    .map_or((None, String::new(), String::new()), |j| {
+                        (j.annee, j.editeur.clone(), j.genre.clone())
+                    });
                 let (titre, details, dat) = match info {
                     Some(j) => {
                         let mut det = j.region.clone();
@@ -462,18 +523,23 @@ impl App {
                     }
                 };
                 // Démo : quelques cartes prennent une jaquette locale pour juger le rendu.
-                let dat = if self.opts.demo && i % 6 == 4 {
-                    Some((r.plateforme, "Jaquette de démonstration".to_string()))
+                let dat = if self.opts.demo {
+                    (i % 6 == 4).then(|| (r.plateforme, "Jaquette de démonstration".to_string()))
                 } else {
                     dat
                 };
-                let cle = plier(&format!("{titre} {fichier}"));
+                // Éditeur, genre et année trouvables à la frappe (« capcom », « 1998 »).
+                let an = annee.map(|a| a.to_string()).unwrap_or_default();
+                let cle = plier(&format!("{titre} {fichier} {editeur} {genre} {an}"));
                 Fiche {
                     rom: i,
                     titre,
                     details,
                     dat,
                     cle,
+                    annee,
+                    editeur,
+                    genre,
                 }
             })
             .collect();
@@ -518,6 +584,7 @@ impl App {
     }
 
     fn lancer_partie(&mut self, rom: Rom, titre: String) {
+        self.panneau = None;
         let sav = self.chemins.sauvegarde(&rom);
         let crc = rom.crc;
         let etats = self.chemins.etats(&rom);
@@ -618,6 +685,13 @@ impl App {
             .as_ref()
             .is_none_or(|p| p.images >= self.opts.images || p.reprise.is_some());
         self.preparer_capture(jeu_pret);
+        // Fiche : ouverte une fois la bibliothèque prête.
+        if self.opts.menu.as_deref() == Some("fiche") && self.analyse_finie && !self.vue.is_empty()
+        {
+            self.opts.menu = None;
+            self.ouvrir_fiche();
+            self.images_menu = self.images_ui;
+        }
         // Menu pause : ouvert une fois l'image du jeu stable, capturé après son animation.
         if jeu_pret && self.partie.is_some() && self.opts.menu.as_deref() == Some("pause") {
             self.opts.menu = None;
@@ -626,7 +700,7 @@ impl App {
         }
         let pret = self.images_ui >= self.opts.images
             && self.analyse_finie
-            && self.opts.menu.as_deref() != Some("pause")
+            && !matches!(self.opts.menu.as_deref(), Some("pause" | "fiche"))
             && (jeu_pret || self.menu.is_some())
             && self.images_ui >= self.images_menu + 15;
         if pret && !self.capture_demandee {
@@ -733,6 +807,9 @@ impl eframe::App for App {
             false
         } else if self.partie.is_some() {
             self.entrees_jeu(ui, pad, maintenant)
+        } else if self.panneau.is_some() {
+            self.entrees_fiche(&evts, pad);
+            false
         } else {
             self.entrees_biblio(&evts, pad);
             false
@@ -748,6 +825,9 @@ impl eframe::App for App {
             }
         } else {
             self.dessiner_biblio(ui, dt);
+            if self.panneau.is_some() {
+                self.dessiner_fiche(ui);
+            }
         }
         if self.menu.is_some() {
             self.dessiner_menu(ui);

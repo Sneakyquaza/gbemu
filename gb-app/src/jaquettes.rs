@@ -1,5 +1,6 @@
-//! Jaquettes (libretro-thumbnails, Named_Boxarts) : téléchargées à la demande pour les jeux
-//! reconnus, mises en cache sur disque, décodées et réduites hors du fil de l'interface.
+//! Vignettes libretro-thumbnails (jaquettes Named_Boxarts, écrans titre Named_Titles, captures
+//! Named_Snaps) : téléchargées à la demande pour les jeux reconnus, mises en cache sur disque,
+//! décodées et réduites hors du fil de l'interface.
 
 use crate::biblio::Plateforme;
 use crate::dat::{agent, encoder_url, perime, systeme};
@@ -21,7 +22,43 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
-type Demande = (Plateforme, String);
+/// Genre de vignette libretro.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Vignette {
+    Boite,
+    Titre,
+    Capture,
+}
+
+impl Vignette {
+    fn dossier_distant(self) -> &'static str {
+        match self {
+            Vignette::Boite => "Named_Boxarts",
+            Vignette::Titre => "Named_Titles",
+            Vignette::Capture => "Named_Snaps",
+        }
+    }
+
+    /// Sous-dossier du cache (les jaquettes restent à la racine de la plateforme).
+    fn sous_dossier(self) -> Option<&'static str> {
+        match self {
+            Vignette::Boite => None,
+            Vignette::Titre => Some("titres"),
+            Vignette::Capture => Some("captures"),
+        }
+    }
+}
+
+/// Clé d'une vignette (nom de texture, réponse du fil) : le nom No-Intro seul pour la jaquette.
+pub fn cle(v: Vignette, nom: &str) -> String {
+    match v {
+        Vignette::Boite => nom.to_string(),
+        Vignette::Titre => format!("titre:{nom}"),
+        Vignette::Capture => format!("capture:{nom}"),
+    }
+}
+
+type Demande = (Plateforme, String, Vignette);
 
 pub struct Jaquettes {
     file: Arc<(Mutex<VecDeque<Demande>>, Condvar)>,
@@ -37,17 +74,21 @@ impl Jaquettes {
         Jaquettes { file, rx }
     }
 
-    /// Demande la jaquette d'un jeu (nom No-Intro) ; les dernières demandes passent en premier.
-    /// Renvoie les demandes trop anciennes abandonnées (à redemander si elles reviennent à l'écran).
-    pub fn demander(&self, p: Plateforme, nom: &str) -> Vec<String> {
+    /// Demande une vignette d'un jeu (nom No-Intro) ; les dernières demandes passent en premier.
+    /// La réponse porte la clé [`cle`]. Renvoie les clés des demandes trop anciennes abandonnées
+    /// (à redemander si elles reviennent à l'écran).
+    pub fn demander(&self, p: Plateforme, nom: &str, v: Vignette) -> Vec<String> {
         let (m, cv) = &*self.file;
         let Ok(mut q) = m.lock() else {
             return Vec::new();
         };
-        q.push_front((p, nom.to_string()));
+        q.push_front((p, nom.to_string(), v));
         cv.notify_one();
         if q.len() > 256 {
-            q.split_off(256).into_iter().map(|(_, n)| n).collect()
+            q.split_off(256)
+                .into_iter()
+                .map(|(_, n, v)| cle(v, &n))
+                .collect()
         } else {
             Vec::new()
         }
@@ -69,7 +110,7 @@ fn boucle(
 ) {
     let agent = agent();
     loop {
-        let (p, nom) = {
+        let (p, nom, v) = {
             let (m, cv) = &*file;
             let Ok(mut q) = m.lock() else { return };
             loop {
@@ -82,24 +123,29 @@ fn boucle(
                 };
             }
         };
-        let img = obtenir(&agent, &dossier, p, &nom, crate::sauve::hors_ligne());
-        if tx.send((nom, img)).is_err() {
+        let img = obtenir(&agent, &dossier, p, &nom, v, crate::sauve::hors_ligne());
+        if tx.send((cle(v, &nom), img)).is_err() {
             return;
         }
         reveil();
     }
 }
 
-/// Jaquette en cache, sinon téléchargée (jamais `hors_ligne`).
+/// Vignette en cache, sinon téléchargée (jamais `hors_ligne`).
 fn obtenir(
     agent: &ureq::Agent,
     dossier: &Path,
     p: Plateforme,
     nom: &str,
+    v: Vignette,
     hors_ligne: bool,
 ) -> Option<Image> {
     let fichier = nom_fichier(nom);
-    let local = dossier.join(p.court()).join(format!("{fichier}.png"));
+    let mut local = dossier.join(p.court());
+    if let Some(s) = v.sous_dossier() {
+        local.push(s);
+    }
+    let local = local.join(format!("{fichier}.png"));
     let absent = local.with_extension("absent");
     if let Ok(d) = std::fs::read(&local) {
         return decoder(&d);
@@ -108,8 +154,9 @@ fn obtenir(
         return None;
     }
     let url = format!(
-        "https://thumbnails.libretro.com/{}/Named_Boxarts/{}.png",
+        "https://thumbnails.libretro.com/{}/{}/{}.png",
         encoder_url(systeme(p)),
+        v.dossier_distant(),
         encoder_url(&fichier)
     );
     match agent.get(&url).call() {
@@ -194,8 +241,26 @@ mod tests {
     #[test]
     fn hors_ligne_rien_n_est_demande() {
         let d = crate::sauve::DossierTest::new("jaquettes");
-        assert!(obtenir(&agent(), &d.0, Plateforme::Gb, "Jeu (France)", true).is_none());
+        for v in [Vignette::Boite, Vignette::Titre, Vignette::Capture] {
+            assert!(obtenir(&agent(), &d.0, Plateforme::Gb, "Jeu (France)", v, true).is_none());
+        }
         // Aucun marqueur « absent » : la jaquette sera demandée une fois en ligne.
         assert!(std::fs::read_dir(&d.0).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn vignettes_en_cache_par_genre() {
+        let d = crate::sauve::DossierTest::new("vignettes");
+        // PNG 1×1 gris posé dans le cache des écrans titre seulement.
+        let png = crate::etats::encoder_png(&[90, 90, 90], 1, 1).unwrap();
+        let titre = d.0.join("GB").join("titres").join("A_B (Europe).png");
+        crate::sauve::ecrire_atomique(&titre, &png).unwrap();
+        let a = agent();
+        let lire = |v| obtenir(&a, &d.0, Plateforme::Gb, "A&B (Europe)", v, true);
+        assert!(lire(Vignette::Titre).is_some());
+        assert!(lire(Vignette::Boite).is_none());
+        assert!(lire(Vignette::Capture).is_none());
+        assert_eq!(cle(Vignette::Boite, "X"), "X");
+        assert_ne!(cle(Vignette::Titre, "X"), cle(Vignette::Capture, "X"));
     }
 }

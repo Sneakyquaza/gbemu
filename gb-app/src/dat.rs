@@ -1,6 +1,7 @@
-//! Reconnaissance des jeux : DAT No-Intro et années de sortie de libretro-database (CC BY-SA 4.0).
-//! Métadonnées seulement, téléchargées au premier lancement puis lues depuis le cache (relues
-//! tous les 90 jours). Mode hors ligne : jamais de téléchargement.
+//! Reconnaissance des jeux : DAT No-Intro et métadonnées `metadat/` de libretro-database
+//! (CC BY-SA 4.0 : année et mois, développeur, éditeur, genre, joueurs, classement ESRB), par CRC.
+//! Téléchargées au premier lancement puis lues depuis le cache (relues tous les 90 jours).
+//! Mode hors ligne : jamais de téléchargement.
 
 use crate::biblio::Plateforme;
 use std::collections::HashMap;
@@ -21,9 +22,26 @@ pub struct InfoJeu {
     pub region: String,
     pub annee: Option<u16>,
     pub plateforme: Plateforme,
+    pub mois: Option<u8>,
+    pub developpeur: String,
+    pub editeur: String,
+    pub genre: String,
+    /// Nombre maximal de joueurs.
+    pub joueurs: Option<u8>,
+    pub esrb: String,
 }
 
-#[derive(Default)]
+/// Fichiers `metadat/<dossier>` lus après les noms : (dossier, clé dans le bloc `game`).
+const METADAT: [(&str, &str); 6] = [
+    ("developer", "developer"),
+    ("publisher", "publisher"),
+    ("genre", "genre"),
+    ("releasemonth", "releasemonth"),
+    ("maxusers", "users"),
+    ("esrb", "esrb_rating"),
+];
+
+#[derive(Default, Clone)]
 pub struct Base {
     pub jeux: HashMap<u32, InfoJeu>,
 }
@@ -99,7 +117,7 @@ fn telecharger(agent: &ureq::Agent, local: &Path, sous: &str, p: Plateforme) -> 
     Some(texte)
 }
 
-/// Charge (et télécharge si besoin) les trois plateformes.
+/// Charge (et télécharge si besoin) les noms et années des trois plateformes.
 pub fn charger(dossier: &Path) -> Base {
     let agent = agent();
     let hors_ligne = crate::sauve::hors_ligne();
@@ -113,6 +131,19 @@ pub fn charger(dossier: &Path) -> Base {
         }
     }
     base
+}
+
+/// Ajoute les autres métadonnées (développeur, éditeur…) ; à appeler après [`charger`].
+pub fn completer(dossier: &Path, base: &mut Base) {
+    let agent = agent();
+    let hors_ligne = crate::sauve::hors_ligne();
+    for p in [Plateforme::Gb, Plateforme::Gbc, Plateforme::Gba] {
+        for (sous, cle) in METADAT {
+            if let Some(t) = obtenir(&agent, dossier, sous, p, hors_ligne) {
+                lire_champ(&t, cle, base);
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -205,6 +236,12 @@ fn lire_nointro(t: &str, p: Plateforme, base: &mut Base) {
                 region: c.get("region").unwrap_or(&"").to_string(),
                 annee,
                 plateforme: p,
+                mois: None,
+                developpeur: String::new(),
+                editeur: String::new(),
+                genre: String::new(),
+                joueurs: None,
+                esrb: String::new(),
             },
         );
     });
@@ -220,6 +257,31 @@ fn lire_annees(t: &str, base: &mut Base) {
         };
         if let Some(j) = base.jeux.get_mut(&crc) {
             j.annee.get_or_insert(a);
+        }
+    });
+}
+
+/// Un champ `metadat/` (clé `cle`) reporté sur les jeux déjà connus (par CRC).
+fn lire_champ(t: &str, cle: &str, base: &mut Base) {
+    blocs_jeu(t, |c| {
+        let (Some(v), Some(crc)) = (c.get(cle), c.get("crc")) else {
+            return;
+        };
+        let Ok(crc) = u32::from_str_radix(crc, 16) else {
+            return;
+        };
+        let Some(j) = base.jeux.get_mut(&crc) else {
+            return;
+        };
+        let v = v.trim();
+        match cle {
+            "developer" => j.developpeur = v.to_string(),
+            "publisher" => j.editeur = v.to_string(),
+            "genre" => j.genre = v.to_string(),
+            "releasemonth" => j.mois = v.parse().ok().filter(|m| (1..=12).contains(m)),
+            "users" => j.joueurs = v.parse().ok().filter(|&n| n > 0),
+            "esrb_rating" => j.esrb = v.to_string(),
+            _ => {}
         }
     });
 }
@@ -275,6 +337,37 @@ game (
         assert_eq!(j.titre, "The Lanterne - Retour");
         assert_eq!(j.region, "Europe");
         assert_eq!(j.annee, Some(1999));
+    }
+
+    #[test]
+    fn lecture_metadat() {
+        let mut b = Base::default();
+        lire_nointro(EXTRAIT, Plateforme::Gb, &mut b);
+        let bloc = |k: &str, v: &str| {
+            format!("clrmamepro ( name \"x\" )\ngame (\n\tcomment \"c\"\n\t{k} {v}\n\trom ( crc 9A024415 )\n)\ngame (\n\t{k} {v}\n\trom ( crc 11111111 )\n)\n")
+        };
+        lire_champ(&bloc("developer", "\"Morning Star\""), "developer", &mut b);
+        lire_champ(&bloc("publisher", "\"Majesco\""), "publisher", &mut b);
+        lire_champ(&bloc("genre", "\"Sports\""), "genre", &mut b);
+        lire_champ(&bloc("releasemonth", "\"8\""), "releasemonth", &mut b);
+        lire_champ(&bloc("users", "2"), "users", &mut b);
+        lire_champ(&bloc("esrb_rating", "\"E\""), "esrb_rating", &mut b);
+        // CRC inconnu (11111111) : ignoré, rien n'est créé.
+        assert_eq!(b.jeux.len(), 1);
+        let j = &b.jeux[&0x9A02_4415];
+        assert_eq!(j.developpeur, "Morning Star");
+        assert_eq!(j.editeur, "Majesco");
+        assert_eq!(j.genre, "Sports");
+        assert_eq!(j.mois, Some(8));
+        assert_eq!(j.joueurs, Some(2));
+        assert_eq!(j.esrb, "E");
+        // Valeurs absurdes écartées sans panique.
+        lire_champ(&bloc("releasemonth", "\"13\""), "releasemonth", &mut b);
+        lire_champ(&bloc("users", "beaucoup"), "users", &mut b);
+        let j = &b.jeux[&0x9A02_4415];
+        assert_eq!((j.mois, j.joueurs), (None, None));
+        // Bloc tronqué : aucune panique.
+        lire_champ("game ( genre \"Puzzle\" rom ( crc", "genre", &mut b);
     }
 
     #[test]

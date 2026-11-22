@@ -18,6 +18,9 @@ pub(super) enum Tri {
     Nom,
     Recent,
     Temps,
+    Annee,
+    Editeur,
+    Genre,
 }
 
 impl Tri {
@@ -26,6 +29,9 @@ impl Tri {
             Tri::Nom => "Nom",
             Tri::Recent => "Récents",
             Tri::Temps => "Temps de jeu",
+            Tri::Annee => "Année",
+            Tri::Editeur => "Éditeur",
+            Tri::Genre => "Genre",
         }
     }
 
@@ -33,7 +39,10 @@ impl Tri {
         match self {
             Tri::Nom => Tri::Recent,
             Tri::Recent => Tri::Temps,
-            Tri::Temps => Tri::Nom,
+            Tri::Temps => Tri::Annee,
+            Tri::Annee => Tri::Editeur,
+            Tri::Editeur => Tri::Genre,
+            Tri::Genre => Tri::Nom,
         }
     }
 }
@@ -44,7 +53,7 @@ pub(super) struct Habillage {
     intro: Option<Intro>,
     pub(super) sons: SonsUi,
     pub(super) stats: Stats,
-    onglet: Onglet,
+    pub(super) onglet: Onglet,
     tri: Tri,
     /// Couleur moyenne de chaque jaquette chargée (halo derrière la sélection).
     pub(super) teintes: HashMap<String, Color32>,
@@ -131,6 +140,10 @@ impl App {
             Onglet::Favoris => self.vue.retain(|&fi| jeu(fi).favori),
             Onglet::Tous => {}
         }
+        if let Some((champ, val)) = &self.filtre_meta {
+            let fiches = &self.fiches;
+            self.vue.retain(|&fi| champ.valeur(&fiches[fi]) == *val);
+        }
         let tri = if self.hab.onglet == Onglet::Recents {
             Tri::Recent
         } else {
@@ -144,10 +157,27 @@ impl App {
             Tri::Temps => self
                 .vue
                 .sort_by(|&a, &b| jeu(b).temps.total_cmp(&jeu(a).temps)),
+            // Tris stables : à valeur égale, l'ordre par nom reste ; inconnus à la fin.
+            Tri::Annee => {
+                let f = &self.fiches;
+                self.vue
+                    .sort_by_key(|&fi| (f[fi].annee.is_none(), f[fi].annee));
+            }
+            Tri::Editeur | Tri::Genre => {
+                let f = &self.fiches;
+                self.vue.sort_by_cached_key(|&fi| {
+                    let v = if tri == Tri::Editeur {
+                        &f[fi].editeur
+                    } else {
+                        &f[fi].genre
+                    };
+                    (v.is_empty(), plier(v))
+                });
+            }
         }
     }
 
-    fn basculer_favori(&mut self) {
+    pub(super) fn basculer_favori(&mut self) {
         let Some(&fi) = self.vue.get(self.sel) else {
             return;
         };
@@ -206,10 +236,13 @@ impl App {
                             self.recherche.clear();
                             recherche_changee = true;
                             self.son(Son::Retour);
+                        } else if self.filtre_meta.is_some() {
+                            self.retirer_filtre_meta();
                         } else {
                             self.recherche_active = false;
                         }
                     }
+                    Key::F1 => self.ouvrir_fiche(),
                     Key::Tab => self.changer_filtre(if modifiers.shift { -1 } else { 1 }),
                     Key::F2 => self.ouvrir_menu(GenreMenu::Reglages),
                     Key::F3 => {
@@ -228,10 +261,17 @@ impl App {
                 _ => {}
             }
         }
-        if pad.appuis & b::EST != 0 && !self.recherche.is_empty() {
-            self.recherche.clear();
-            recherche_changee = true;
-            self.son(Son::Retour);
+        if pad.appuis & b::EST != 0 {
+            if !self.recherche.is_empty() {
+                self.recherche.clear();
+                recherche_changee = true;
+                self.son(Son::Retour);
+            } else if self.filtre_meta.is_some() {
+                self.retirer_filtre_meta();
+            }
+        }
+        if pad.appuis & b::NORD != 0 {
+            self.ouvrir_fiche();
         }
         if pad.appuis & b::OUEST != 0 {
             self.basculer_favori();
@@ -291,7 +331,7 @@ impl App {
         }
     }
 
-    fn lancer_avec_son(&mut self) {
+    pub(super) fn lancer_avec_son(&mut self) {
         let choisi = self.vue.get(self.sel).is_some();
         self.son(if choisi { Son::Valider } else { Son::Erreur });
         self.lancer_selection();
@@ -302,7 +342,7 @@ impl App {
         ((self.vue_h / self.ligne_h).floor() as i32).max(1)
     }
 
-    fn rendre_visible(&mut self) {
+    pub(super) fn rendre_visible(&mut self) {
         let ligne = (self.sel / self.colonnes.max(1)) as f32;
         let y = ligne * self.ligne_h;
         let marge = 12.0;
@@ -625,6 +665,7 @@ impl App {
         let mut vues = Vec::new();
         let mut clic = None;
         let mut double = false;
+        let mut fiche = false;
         for ligne_i in premiere..derniere.min(lignes) {
             for col in 0..colonnes {
                 let k = ligne_i * colonnes + col;
@@ -640,6 +681,10 @@ impl App {
                 if rep.double_clicked() {
                     clic = Some(k);
                     double = true;
+                }
+                if rep.secondary_clicked() {
+                    clic = Some(k);
+                    fiche = true;
                 }
                 let choisi = k == self.sel;
                 let t = d::anim(&ctx, id, choisi, DUREE_LEVEE);
@@ -682,12 +727,14 @@ impl App {
             self.sel = k;
             if double {
                 self.lancer_avec_son();
+            } else if fiche {
+                self.ouvrir_fiche();
             }
         }
         if let Some(j) = &self.jaquettes {
             for (pl, nom) in a_demander {
                 self.demandees.insert(nom.clone());
-                for abandon in j.demander(pl, &nom) {
+                for abandon in j.demander(pl, &nom, Vignette::Boite) {
                     self.demandees.remove(&abandon);
                 }
             }
@@ -744,6 +791,7 @@ impl App {
         let puces: Vec<(&str, &str)> = if manette {
             vec![
                 ("A", "Jouer"),
+                ("Y", "Fiche"),
                 ("X", "Favori"),
                 ("B", "Effacer"),
                 ("LB RB", "Onglet"),
@@ -752,6 +800,7 @@ impl App {
         } else {
             vec![
                 ("Entrée", "Jouer"),
+                ("F1", "Fiche"),
                 ("Tab", "Onglet"),
                 ("F3", &trier),
                 ("F4", "Favori"),
@@ -762,6 +811,10 @@ impl App {
         let mut xp = ecran.left() + MARGE;
         for (t, a) in puces {
             xp += puce(&p, Pos2::new(xp, yp), t, a) + 22.0;
+        }
+        if self.filtre_meta.is_some() {
+            self.dessiner_filtre_meta(ui, &p, ecran.right() - MARGE, yp);
+            return;
         }
         let g = ligne(
             &p,
@@ -973,7 +1026,8 @@ impl App {
                 "Aucune partie récente".to_string(),
                 "Les jeux lancés apparaîtront ici, du plus récent au plus ancien.".to_string(),
             )
-        } else if !self.recherche.is_empty() || self.filtre.is_some() {
+        } else if !self.recherche.is_empty() || self.filtre.is_some() || self.filtre_meta.is_some()
+        {
             (
                 "Aucun jeu ne correspond".to_string(),
                 "Échap efface la recherche, Tab change d'onglet.".to_string(),
@@ -1245,6 +1299,9 @@ mod tests {
                     titre,
                     details: String::new(),
                     dat: None,
+                    annee: None,
+                    editeur: String::new(),
+                    genre: String::new(),
                 }
             })
             .collect();

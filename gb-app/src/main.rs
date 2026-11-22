@@ -15,6 +15,7 @@ mod machine;
 mod manette;
 mod rembobinage;
 mod sauve;
+mod screenscraper;
 mod sons_ui;
 mod stats;
 mod touches;
@@ -25,7 +26,7 @@ use std::time::{Instant, SystemTime};
 
 const AIDE: &str = "gbemu [--jeux DOSSIER] [--donnees DOSSIER] [--rom FICHIER.gb|.gbc|.gba]
   Vérification visuelle : [--demo] [--capture SORTIE.png] [--images N] [--taille LxH]
-  [--menu pause|reglages|touches[-raccourcis|-capture|-allume|-conflit]] [--grille] [--recherche TEXTE] [--selection N]";
+  [--menu pause|reglages|metadonnees|fiche|touches[-raccourcis|-capture|-allume|-conflit]] [--grille] [--recherche TEXTE] [--selection N]";
 
 fn main() -> eframe::Result {
     let debut = Instant::now();
