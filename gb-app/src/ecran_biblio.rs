@@ -170,6 +170,8 @@ impl App {
         let mut dy: i32 = 0;
         let mut lancer = pad.appuis & b::SUD != 0;
         let mut recherche_changee = false;
+        let mut aller = None;
+        let page = self.lignes_page();
         for e in evts {
             match e {
                 Event::Text(t) | Event::Paste(t) => {
@@ -187,9 +189,15 @@ impl App {
                     Key::ArrowRight => dx += 1,
                     Key::ArrowUp => dy -= 1,
                     Key::ArrowDown => dy += 1,
-                    Key::PageUp => dy -= 3,
-                    Key::PageDown => dy += 3,
+                    Key::PageUp => dy -= page,
+                    Key::PageDown => dy += page,
+                    Key::Home => aller = Some(0),
+                    Key::End => aller = Some(usize::MAX),
                     Key::Enter => lancer = true,
+                    Key::Backspace if modifiers.command => {
+                        recherche_changee |= !self.recherche.is_empty();
+                        self.recherche.clear();
+                    }
                     Key::Backspace => {
                         recherche_changee |= self.recherche.pop().is_some();
                     }
@@ -198,6 +206,8 @@ impl App {
                             self.recherche.clear();
                             recherche_changee = true;
                             self.son(Son::Retour);
+                        } else {
+                            self.recherche_active = false;
                         }
                     }
                     Key::Tab => self.changer_filtre(if modifiers.shift { -1 } else { 1 }),
@@ -235,6 +245,12 @@ impl App {
         if pad.appuis & b::START != 0 {
             self.ouvrir_menu(GenreMenu::Reglages);
         }
+        if pad.appuis & b::L2 != 0 {
+            dy -= page;
+        }
+        if pad.appuis & b::R2 != 0 {
+            dy += page;
+        }
         if pad.appuis & b::GAUCHE != 0 {
             dx -= 1;
         }
@@ -251,20 +267,20 @@ impl App {
             self.changer_recherche();
         }
         let n = self.vue.len();
-        if n > 0 && (dx != 0 || dy != 0) {
-            let c = self.colonnes.max(1) as i32;
-            let mut s = self.sel as i32 + dx;
-            for _ in 0..dy.abs() {
-                let suiv = s + c * dy.signum();
-                if suiv >= 0 && suiv < n as i32 {
-                    s = suiv;
-                } else if dy > 0 && (s / c) < (n as i32 - 1) / c {
-                    // Ligne incomplète en bas : on va au dernier jeu.
-                    s = n as i32 - 1;
-                }
-            }
+        if n > 0 && (dx != 0 || dy != 0 || aller.is_some()) {
+            let c = self.colonnes.max(1);
             let avant = self.sel;
-            self.sel = s.clamp(0, n as i32 - 1) as usize;
+            let visible = self.vue_h <= 0.0
+                || ligne_visible(self.sel / c, self.ligne_h, self.defil_cible, self.vue_h);
+            self.sel = match aller {
+                Some(k) => k.min(n - 1),
+                // Sélection sortie de l'écran (molette, barre) : on reprend sur la 1re carte
+                // visible plutôt que de remonter tout en haut.
+                None if !visible => {
+                    ((self.defil_cible / self.ligne_h).ceil() as usize * c).min(n - 1)
+                }
+                None => deplacer(self.sel, n, c, dx, dy),
+            };
             if self.sel != avant {
                 self.son(Son::Deplacement);
             }
@@ -279,6 +295,11 @@ impl App {
         let choisi = self.vue.get(self.sel).is_some();
         self.son(if choisi { Son::Valider } else { Son::Erreur });
         self.lancer_selection();
+    }
+
+    /// Lignes entières visibles dans la grille (saut de page).
+    fn lignes_page(&self) -> i32 {
+        ((self.vue_h / self.ligne_h).floor() as i32).max(1)
     }
 
     fn rendre_visible(&mut self) {
@@ -504,10 +525,47 @@ impl App {
         self.ligne_h = hc + ECART_Y;
         self.vue_h = grille.height();
         let lignes = self.vue.len().div_ceil(colonnes);
-        let max_defil = (lignes as f32 * self.ligne_h - ECART_Y + 24.0 - grille.height()).max(0.0);
+        let contenu_h = lignes as f32 * self.ligne_h - ECART_Y + 24.0;
+        let max_defil = (contenu_h - grille.height()).max(0.0);
+
+        // Barre de défilement dans la marge droite : poignée glissable, clic dans la piste =
+        // une page vers le pointeur.
+        let piste = Rect::from_min_max(
+            Pos2::new(grille.right() + 8.0, grille.top() + 12.0),
+            Pos2::new(ecran.right() - 6.0, grille.bottom() - 12.0),
+        );
+        let barre = (max_defil > 0.0)
+            .then(|| ui.interact(piste, Id::unique("barre"), Sense::click_and_drag()));
+        if let Some(rep) = &barre {
+            let (py, ph) = poignee(piste.height(), grille.height(), contenu_h, self.defil);
+            if let Some(pos) = rep.interact_pointer_pos() {
+                let y = pos.y - piste.top();
+                if rep.drag_started() {
+                    // Prise sur la poignée : elle garde son écart au pointeur ; ailleurs,
+                    // elle se centre dessus.
+                    let dans = y >= py && y <= py + ph;
+                    self.prise_barre = Some(if dans { y - py } else { ph * 0.5 });
+                }
+                if let Some(prise) = self.prise_barre.filter(|_| rep.dragged()) {
+                    self.defil_cible =
+                        defil_de_poignee(y - prise, piste.height(), ph, contenu_h, grille.height());
+                    self.defil = self.defil_cible;
+                } else if rep.clicked() {
+                    let page = self.lignes_page() as f32 * self.ligne_h;
+                    if y < py {
+                        self.defil_cible -= page;
+                    } else if y > py + ph {
+                        self.defil_cible += page;
+                    }
+                }
+            }
+        }
+        if !barre.as_ref().is_some_and(|r| r.dragged()) {
+            self.prise_barre = None;
+        }
 
         let molette = ui.input(|i| i.smooth_scroll_delta.y);
-        if molette != 0.0 && ui.rect_contains_pointer(grille) {
+        if molette != 0.0 && ui.rect_contains_pointer(grille.union(piste)) {
             self.defil_cible -= molette;
         }
         self.defil_cible = self.defil_cible.clamp(0.0, max_defil);
@@ -556,10 +614,15 @@ impl App {
             );
         }
 
+        // Défilement rapide (barre tenue, grand saut) : indicateur de lettre, et pas de
+        // jaquette demandée pour les cartes qui ne font que passer.
+        let rapide = self.prise_barre.is_some()
+            || (self.defil_cible - self.defil).abs() > self.ligne_h * 1.5;
         let pg = p.with_clip_rect(grille.expand2(Vec2::new(MARGE - 6.0, 0.0)));
         let premiere = ((self.defil - 12.0) / self.ligne_h).floor().max(0.0) as usize;
         let derniere = ((self.defil + grille.height()) / self.ligne_h).ceil() as usize + 1;
         let mut a_demander = Vec::new();
+        let mut vues = Vec::new();
         let mut clic = None;
         let mut double = false;
         for ligne_i in premiere..derniere.min(lignes) {
@@ -581,13 +644,14 @@ impl App {
                 let choisi = k == self.sel;
                 let t = d::anim(&ctx, id, choisi, DUREE_LEVEE);
                 let tex = f.dat.as_ref().and_then(|(_, nom)| self.textures.get(nom));
-                if tex.is_none() {
-                    if let Some((pl, nom)) = &f.dat {
-                        if !self.demandees.contains(nom) {
-                            a_demander.push((*pl, nom.clone()));
-                        }
+                if let Some((pl, nom)) = &f.dat {
+                    if tex.is_some() {
+                        vues.push(nom.clone());
+                    } else if !rapide && !self.demandees.contains(nom) {
+                        a_demander.push((*pl, nom.clone()));
                     }
                 }
+                let tex = tex.map(|(t, _)| t);
                 // Les cartes s'effacent en glissant sous l'en-tête et le pied.
                 let bord = 28.0;
                 let a = ((r.top() + lc * 0.5 - grille.top()) / bord)
@@ -622,8 +686,30 @@ impl App {
         }
         if let Some(j) = &self.jaquettes {
             for (pl, nom) in a_demander {
-                j.demander(pl, &nom);
-                self.demandees.insert(nom);
+                self.demandees.insert(nom.clone());
+                for abandon in j.demander(pl, &nom) {
+                    self.demandees.remove(&abandon);
+                }
+            }
+        }
+        // Mémoire bornée même après avoir parcouru 5 000 jeux : les jaquettes non vues depuis
+        // le plus longtemps sont libérées (relues depuis le cache disque si elles reviennent).
+        for nom in vues {
+            if let Some(e) = self.textures.get_mut(&nom) {
+                e.1 = self.images_ui;
+            }
+        }
+        if self.textures.len() > TEXTURES_MAX {
+            let mut ages: Vec<(u64, String)> = self
+                .textures
+                .iter()
+                .map(|(n, (_, vu))| (*vu, n.clone()))
+                .collect();
+            ages.sort_unstable();
+            let trop = self.textures.len() - TEXTURES_MAX * 3 / 4;
+            for (_, n) in ages.into_iter().take(trop) {
+                self.textures.remove(&n);
+                self.demandees.remove(&n);
             }
         }
 
@@ -638,6 +724,10 @@ impl App {
 
         if self.vue.is_empty() {
             self.dessiner_vide(&p, grille);
+        }
+
+        if let Some(rep) = &barre {
+            self.dessiner_defilement(&p, rep, piste, grille.height(), contenu_h, rapide);
         }
 
         // Pied : raccourcis.
@@ -689,32 +779,148 @@ impl App {
         }
     }
 
-    fn dessiner_recherche(&self, ui: &egui::Ui, p: &egui::Painter, rech: Rect) {
+    /// Barre de défilement (piste discrète, poignée qui s'épaissit au survol) et, pendant un
+    /// défilement rapide trié par nom, bulle de la lettre des cartes affichées.
+    fn dessiner_defilement(
+        &self,
+        p: &egui::Painter,
+        rep: &egui::Response,
+        piste: Rect,
+        vue_h: f32,
+        contenu_h: f32,
+        rapide: bool,
+    ) {
         let jt = j();
+        let ctx = &rep.ctx;
+        let tenue = rep.dragged();
+        let t = ctx.animate_bool_with_time(
+            Id::unique("barre-t"),
+            rep.hovered() || tenue,
+            d::duree_fondu(0.12),
+        );
+        let l = 6.0 + 4.0 * t;
+        let x = piste.center().x;
+        let fond =
+            Rect::from_center_size(Pos2::new(x, piste.center().y), Vec2::new(l, piste.height()));
+        p.rect_filled(fond, CornerRadius::same(5), alpha(jt.trait_, 0.5 + 0.5 * t));
+        let (py, ph) = poignee(piste.height(), vue_h, contenu_h, self.defil);
+        let poig = Rect::from_min_size(Pos2::new(x - l * 0.5, piste.top() + py), Vec2::new(l, ph));
+        let c = if tenue {
+            jt.accent
+        } else {
+            jt.discret.lerp_to_gamma(jt.texte, 0.35 + 0.45 * t)
+        };
+        p.rect_filled(poig, CornerRadius::same(5), c);
+
+        let tl = ctx.animate_bool_with_time(Id::unique("lettre-t"), rapide, d::duree_fondu(0.25));
+        let par_nom = self.hab.tri == Tri::Nom && self.hab.onglet != Onglet::Recents;
+        if tl <= 0.0 || !par_nom {
+            return;
+        }
+        let k = (self.defil / self.ligne_h).round() as usize * self.colonnes.max(1);
+        let Some(&fi) = self.vue.get(k.min(self.vue.len().saturating_sub(1))) else {
+            return;
+        };
+        let b = Rect::from_center_size(
+            Pos2::new(
+                piste.left() - 36.0,
+                poig.center()
+                    .y
+                    .clamp(piste.top() + 28.0, piste.bottom() - 28.0),
+            ),
+            Vec2::splat(56.0),
+        );
+        d::ombre(p, b.shrink(4.0), 16.0, 4.0, 14.0, 0.6 * tl);
+        panneau(
+            p,
+            b,
+            16.0,
+            alpha(jt.surface_haute, tl),
+            Some(alpha(jt.accent, 0.8 * tl)),
+        );
+        let g = ligne(
+            p,
+            &initiale(&self.fiches[fi].titre).to_string(),
+            gras(28.0),
+            alpha(jt.texte, tl),
+        );
+        p.galley(b.center() - g.size() * 0.5, g, alpha(jt.texte, tl));
+    }
+
+    fn dessiner_recherche(&mut self, ui: &egui::Ui, p: &egui::Painter, rech: Rect) {
+        let jt = j();
+        // Le champ réagit à la souris : curseur texte, clic = curseur affiché (la frappe va
+        // de toute façon dans la recherche), croix pour effacer.
+        let rep = ui
+            .interact(rech, Id::unique("recherche"), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::Text);
+        if rep.clicked() {
+            self.recherche_active = true;
+        } else if ui.input(|i| i.pointer.any_pressed()) && !rep.hovered() {
+            self.recherche_active = false;
+        }
+        let croix = Rect::from_center_size(
+            Pos2::new(rech.right() - 22.0, rech.center().y),
+            Vec2::splat(26.0),
+        );
+        if !self.recherche.is_empty() {
+            let rc = ui
+                .interact(croix, Id::unique("recherche-x"), Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Effacer (Échap)");
+            if rc.clicked() {
+                self.recherche.clear();
+                self.recherche_active = true;
+                self.changer_recherche();
+                self.son(Son::Retour);
+            }
+        }
         let actif = !self.recherche.is_empty();
+        let focus = actif || self.recherche_active;
         d::ombre(p, rech.shrink(4.0), 20.0, 4.0, 12.0, 0.5);
         panneau(
             p,
             rech,
             20.0,
             jt.surface,
-            Some(if actif {
+            Some(if focus {
                 alpha(jt.accent, 0.8)
+            } else if rep.hovered() {
+                jt.doux
             } else {
                 jt.trait_
             }),
         );
         // Loupe.
         let lc = Pos2::new(rech.left() + 21.0, rech.center().y - 1.0);
-        let tr = Stroke::new(1.8, if actif { jt.texte } else { jt.doux });
+        let tr = Stroke::new(1.8, if focus { jt.texte } else { jt.doux });
         p.circle_stroke(lc, 6.0, tr);
         p.line_segment([lc + Vec2::new(4.3, 4.3), lc + Vec2::new(8.5, 8.5)], tr);
         let xt = rech.left() + 38.0;
+        let mut w = 0.0;
         if actif {
+            // Texte trop long : on montre sa fin, là où l'on tape.
             let g = ligne(p, &self.recherche, regulier(15.5), jt.texte);
-            let w = g.size().x.min(rech.width() - 56.0);
-            let pt = Pos2::new(xt, rech.center().y - g.size().y * 0.5);
-            p.with_clip_rect(rech.shrink(4.0)).galley(pt, g, jt.texte);
+            let place = croix.left() - 4.0 - xt;
+            w = g.size().x.min(place);
+            let pt = Pos2::new(xt + w - g.size().x, rech.center().y - g.size().y * 0.5);
+            let clip = Rect::from_x_y_ranges(xt - 2.0..=croix.left() - 2.0, rech.y_range());
+            p.with_clip_rect(clip).galley(pt, g, jt.texte);
+            // Croix pour effacer.
+            let survol = ui.rect_contains_pointer(croix);
+            if survol {
+                p.circle_filled(croix.center(), 11.0, jt.surface_haute);
+            }
+            let cc = croix.center();
+            let tr = Stroke::new(1.6, if survol { jt.texte } else { jt.doux });
+            for s in [-1.0, 1.0] {
+                p.line_segment(
+                    [cc + Vec2::new(-4.5, -4.5 * s), cc + Vec2::new(4.5, 4.5 * s)],
+                    tr,
+                );
+            }
+        }
+        if focus {
             let t = ui.input(|i| i.time);
             if (t * 1.6).fract() < 0.6 {
                 p.line_segment(
@@ -727,17 +933,25 @@ impl App {
             }
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(250));
-        } else {
+        }
+        if !actif {
             let g = bloc(
                 p,
-                "Tapez pour chercher un jeu",
+                if focus {
+                    "Nom du jeu…"
+                } else {
+                    "Tapez pour chercher un jeu"
+                },
                 regulier(15.5),
                 jt.discret,
                 rech.width() - 52.0,
                 1,
             );
             p.galley(
-                Pos2::new(xt, rech.center().y - g.size().y * 0.5),
+                Pos2::new(
+                    xt + if focus { 6.0 } else { 0.0 },
+                    rech.center().y - g.size().y * 0.5,
+                ),
                 g,
                 jt.discret,
             );
@@ -788,6 +1002,60 @@ impl App {
             let gs = g.size();
             p.galley(Pos2::new(c.x - gs.x * 0.5, c.y + 44.0), g, jt.doux);
         }
+    }
+}
+
+/// Au-delà, les jaquettes les moins récemment vues sont libérées (~0,5 Mo chacune).
+const TEXTURES_MAX: usize = 300;
+
+/// Sélection après `dx` cartes puis `dy` lignes dans une grille de `n` cartes.
+fn deplacer(sel: usize, n: usize, colonnes: usize, dx: i32, dy: i32) -> usize {
+    let c = colonnes.max(1) as i32;
+    let mut s = sel as i32 + dx;
+    for _ in 0..dy.abs() {
+        let suiv = s + c * dy.signum();
+        if suiv >= 0 && suiv < n as i32 {
+            s = suiv;
+        } else if dy > 0 && (s / c) < (n as i32 - 1) / c {
+            // Ligne incomplète en bas : on va au dernier jeu.
+            s = n as i32 - 1;
+        }
+    }
+    s.clamp(0, n as i32 - 1) as usize
+}
+
+/// La ligne `ligne` a-t-elle au moins la moitié de sa hauteur à l'écran ?
+fn ligne_visible(ligne: usize, ligne_h: f32, defil: f32, vue_h: f32) -> bool {
+    let milieu = ligne as f32 * ligne_h + ligne_h * 0.5;
+    milieu >= defil && milieu <= defil + vue_h
+}
+
+/// Poignée de la barre : (haut, hauteur) dans une piste de hauteur `piste_h`.
+fn poignee(piste_h: f32, vue_h: f32, contenu_h: f32, defil: f32) -> (f32, f32) {
+    let h = (piste_h * vue_h / contenu_h.max(1.0)).clamp(36.0_f32.min(piste_h), piste_h);
+    let max = (contenu_h - vue_h).max(0.0);
+    let y = if max > 0.0 {
+        (piste_h - h) * (defil / max).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (y, h)
+}
+
+/// Défilement qui place le haut de la poignée (hauteur `h`) à `y` dans la piste.
+fn defil_de_poignee(y: f32, piste_h: f32, h: f32, contenu_h: f32, vue_h: f32) -> f32 {
+    let course = piste_h - h;
+    if course <= 0.0 {
+        return 0.0;
+    }
+    (y / course).clamp(0.0, 1.0) * (contenu_h - vue_h).max(0.0)
+}
+
+/// Lettre de la bulle de défilement : initiale sans accent, « # » pour un chiffre ou un signe.
+fn initiale(titre: &str) -> char {
+    match plier(titre).chars().find(|c| c.is_alphanumeric()) {
+        Some(c) if c.is_ascii_alphabetic() => c.to_ascii_uppercase(),
+        _ => '#',
     }
 }
 
@@ -946,4 +1214,141 @@ fn carte(
         1,
     );
     p.galley(Pos2::new(r.left() + 15.0, yd), g, jt.doux);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 5 200 fiches synthétiques, titres variés (accents compris).
+    fn bibliotheque(n: usize) -> (Vec<Fiche>, Vec<Rom>) {
+        let mots = [
+            "Donjon", "Étoile", "Kobold", "Forêt", "Dragon", "Lune", "Zèbre", "Kart",
+        ];
+        let pl = [Plateforme::Gb, Plateforme::Gbc, Plateforme::Gba];
+        let roms: Vec<Rom> = (0..n)
+            .map(|i| Rom {
+                fichier: PathBuf::from(format!("jeux/{i}.gb")),
+                interne: None,
+                taille: 0,
+                crc: i as u32,
+                plateforme: pl[i % 3],
+                titre_entete: String::new(),
+            })
+            .collect();
+        let fiches = (0..n)
+            .map(|i| {
+                let titre = format!("{} {} {i}", mots[i % 8], mots[(i / 8) % 8]);
+                Fiche {
+                    rom: i,
+                    cle: plier(&format!("{titre} {i}.gb")),
+                    titre,
+                    details: String::new(),
+                    dat: None,
+                }
+            })
+            .collect();
+        (fiches, roms)
+    }
+
+    #[test]
+    fn filtrage_mots_accents_plateforme() {
+        let (fiches, roms) = bibliotheque(5200);
+        assert_eq!(filtrer_fiches(&fiches, &roms, None, "").len(), 5200);
+        assert_eq!(filtrer_fiches(&fiches, &roms, None, "   ").len(), 5200);
+        // « foret » trouve « Forêt », « ETOILE » trouve « Étoile » ; tous les mots requis.
+        let foret = filtrer_fiches(&fiches, &roms, None, "foret");
+        assert!(!foret.is_empty() && foret.iter().all(|&i| fiches[i].titre.contains("Forêt")));
+        let deux = filtrer_fiches(&fiches, &roms, None, "ETOILE  lune");
+        assert!(!deux.is_empty());
+        assert!(deux
+            .iter()
+            .all(|&i| fiches[i].titre.contains("Étoile") && fiches[i].titre.contains("Lune")));
+        let gba = filtrer_fiches(&fiches, &roms, Some(Plateforme::Gba), "dragon");
+        assert!(gba
+            .iter()
+            .all(|&i| roms[fiches[i].rom].plateforme == Plateforme::Gba));
+        assert!(filtrer_fiches(&fiches, &roms, None, "introuvable").is_empty());
+    }
+
+    #[test]
+    fn filtrage_5200_sous_16_ms() {
+        let (fiches, roms) = bibliotheque(5200);
+        // Une frappe = un filtrage complet ; on prend la pire de 20 frappes.
+        let mut pire = std::time::Duration::ZERO;
+        for t in [
+            "d",
+            "dr",
+            "dra",
+            "drag",
+            "drago",
+            "dragon",
+            "dragon l",
+            "dragon lune",
+        ]
+        .iter()
+        .cycle()
+        .take(20)
+        {
+            let t0 = std::time::Instant::now();
+            std::hint::black_box(filtrer_fiches(&fiches, &roms, None, t));
+            pire = pire.max(t0.elapsed());
+        }
+        assert!(pire.as_millis() < 16, "filtrage de 5 200 fiches : {pire:?}");
+    }
+
+    #[test]
+    fn deplacement_dans_la_grille() {
+        // 10 cartes sur 4 colonnes : lignes 0-3, 4-7, 8-9.
+        assert_eq!(deplacer(0, 10, 4, 1, 0), 1);
+        assert_eq!(deplacer(0, 10, 4, -1, 0), 0);
+        assert_eq!(deplacer(1, 10, 4, 0, 1), 5);
+        // Ligne incomplète en bas : dernier jeu.
+        assert_eq!(deplacer(7, 10, 4, 0, 1), 9);
+        // Saut de page de 3 lignes, borné aux extrémités.
+        assert_eq!(deplacer(2, 10, 4, 0, 3), 9);
+        assert_eq!(deplacer(9, 10, 4, 0, -3), 1);
+        assert_eq!(deplacer(5, 10, 4, 0, -5), 1);
+        assert_eq!(deplacer(9, 10, 4, 5, 0), 9);
+    }
+
+    #[test]
+    fn ligne_visible_a_moitie() {
+        // Lignes de 100 px, vue de 250 px.
+        assert!(ligne_visible(0, 100.0, 0.0, 250.0));
+        assert!(ligne_visible(2, 100.0, 0.0, 250.0));
+        assert!(!ligne_visible(3, 100.0, 0.0, 250.0));
+        assert!(!ligne_visible(0, 100.0, 60.0, 250.0));
+        assert!(ligne_visible(1, 100.0, 60.0, 250.0));
+    }
+
+    #[test]
+    fn poignee_et_retour() {
+        // Contenu 10 fois plus haut que la vue : poignée au dixième de la piste.
+        let (y, h) = poignee(500.0, 600.0, 6000.0, 0.0);
+        assert_eq!((y, h), (0.0, 50.0));
+        let (y, _) = poignee(500.0, 600.0, 6000.0, 5400.0);
+        assert_eq!(y, 450.0);
+        let (y, _) = poignee(500.0, 600.0, 6000.0, 2700.0);
+        assert_eq!(y, 225.0);
+        // Aller-retour poignée → défilement.
+        assert_eq!(defil_de_poignee(225.0, 500.0, 50.0, 6000.0, 600.0), 2700.0);
+        assert_eq!(defil_de_poignee(-30.0, 500.0, 50.0, 6000.0, 600.0), 0.0);
+        assert_eq!(defil_de_poignee(900.0, 500.0, 50.0, 6000.0, 600.0), 5400.0);
+        // 5 200 jeux : poignée jamais plus petite que 36 px.
+        let (_, h) = poignee(560.0, 660.0, 870.0 * 270.0, 0.0);
+        assert_eq!(h, 36.0);
+        // Tout tient dans la vue : poignée pleine, immobile.
+        assert_eq!(poignee(500.0, 600.0, 400.0, 0.0), (0.0, 500.0));
+        assert_eq!(defil_de_poignee(10.0, 500.0, 500.0, 400.0, 600.0), 0.0);
+    }
+
+    #[test]
+    fn initiale_de_bulle() {
+        assert_eq!(initiale("Zelda"), 'Z');
+        assert_eq!(initiale("Étoile filante"), 'E');
+        assert_eq!(initiale("'Totally' Rad"), 'T');
+        assert_eq!(initiale("1942"), '#');
+        assert_eq!(initiale(""), '#');
+    }
 }

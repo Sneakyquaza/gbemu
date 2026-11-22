@@ -38,12 +38,18 @@ impl Jaquettes {
     }
 
     /// Demande la jaquette d'un jeu (nom No-Intro) ; les dernières demandes passent en premier.
-    pub fn demander(&self, p: Plateforme, nom: &str) {
+    /// Renvoie les demandes trop anciennes abandonnées (à redemander si elles reviennent à l'écran).
+    pub fn demander(&self, p: Plateforme, nom: &str) -> Vec<String> {
         let (m, cv) = &*self.file;
-        if let Ok(mut q) = m.lock() {
-            q.push_front((p, nom.to_string()));
-            q.truncate(256);
-            cv.notify_one();
+        let Ok(mut q) = m.lock() else {
+            return Vec::new();
+        };
+        q.push_front((p, nom.to_string()));
+        cv.notify_one();
+        if q.len() > 256 {
+            q.split_off(256).into_iter().map(|(_, n)| n).collect()
+        } else {
+            Vec::new()
         }
     }
 }

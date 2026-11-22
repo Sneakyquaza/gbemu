@@ -84,10 +84,13 @@ pub struct App {
     t_analyse: Instant,
 
     jaquettes: Option<Jaquettes>,
-    textures: HashMap<String, TextureHandle>,
+    /// Jaquettes chargées, avec la dernière image d'interface où elles étaient visibles.
+    textures: HashMap<String, (TextureHandle, u64)>,
     demandees: HashSet<String>,
 
     recherche: String,
+    /// Champ de recherche cliqué : curseur affiché même vide (la frappe y va de toute façon).
+    recherche_active: bool,
     filtre: Option<Plateforme>,
     sel: usize,
     colonnes: usize,
@@ -95,6 +98,8 @@ pub struct App {
     defil_cible: f32,
     vue_h: f32,
     ligne_h: f32,
+    /// Barre de défilement saisie : écart entre le pointeur et le haut de la poignée.
+    prise_barre: Option<f32>,
 
     partie: Option<Partie>,
     debut_partie: f64,
@@ -137,6 +142,28 @@ fn plier(s: &str) -> String {
             'ñ' => 'n',
             _ => c,
         })
+        .collect()
+}
+
+/// Indices des fiches de la plateforme `filtre` dont la clé contient tous les mots cherchés.
+fn filtrer_fiches(
+    fiches: &[Fiche],
+    roms: &[Rom],
+    filtre: Option<Plateforme>,
+    recherche: &str,
+) -> Vec<usize> {
+    let termes: Vec<String> = plier(recherche)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    fiches
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| {
+            filtre.is_none_or(|p| roms[f.rom].plateforme == p)
+                && termes.iter().all(|t| f.cle.contains(t.as_str()))
+        })
+        .map(|(i, _)| i)
         .collect()
 }
 
@@ -219,6 +246,7 @@ impl App {
 
         let mut app = App {
             recherche: opts.recherche.clone().unwrap_or_default(),
+            recherche_active: false,
             sel: opts.selection,
             opts,
             chemins,
@@ -243,6 +271,7 @@ impl App {
             defil_cible: 0.0,
             vue_h: 0.0,
             ligne_h: 1.0,
+            prise_barre: None,
             partie: None,
             debut_partie: 0.0,
             tex_ecran: None,
@@ -385,7 +414,7 @@ impl App {
                     let ci =
                         ColorImage::from_rgba_unmultiplied([img.largeur, img.hauteur], &img.rgba);
                     let t = self.ctx.load_texture(&nom, ci, TextureOptions::LINEAR);
-                    self.textures.insert(nom, t);
+                    self.textures.insert(nom, (t, self.images_ui));
                 }
             }
         }
@@ -463,20 +492,7 @@ impl App {
     }
 
     fn filtrer(&mut self) {
-        let termes: Vec<String> = plier(&self.recherche)
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        self.vue = self
-            .fiches
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| {
-                self.filtre.is_none_or(|p| self.roms[f.rom].plateforme == p)
-                    && termes.iter().all(|t| f.cle.contains(t.as_str()))
-            })
-            .map(|(i, _)| i)
-            .collect();
+        self.vue = filtrer_fiches(&self.fiches, &self.roms, self.filtre, &self.recherche);
         self.affiner_vue();
         if !self.vue.is_empty() {
             self.sel = self.sel.min(self.vue.len() - 1);
