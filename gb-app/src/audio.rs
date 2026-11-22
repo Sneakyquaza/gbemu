@@ -3,6 +3,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const FREQUENCE: u32 = 48_000;
@@ -12,17 +13,26 @@ const TAMPON_MAX: usize = FREQUENCE as usize * 2 * 120 / 1000;
 pub struct Sortie {
     _flux: cpal::Stream,
     tampon: Arc<Mutex<VecDeque<f32>>>,
+    /// Levé par cpal quand la sortie disparaît (casque débranché, autre sortie par défaut).
+    panne: Arc<AtomicBool>,
 }
 
 impl Sortie {
     /// `None` sans périphérique de sortie.
     pub fn ouvrir() -> Option<Sortie> {
         let tampon: Arc<Mutex<VecDeque<f32>>> = Arc::default();
-        let flux = ouvrir_flux(Arc::clone(&tampon))?;
+        let panne: Arc<AtomicBool> = Arc::default();
+        let flux = ouvrir_flux(Arc::clone(&tampon), Arc::clone(&panne))?;
         Some(Sortie {
             _flux: flux,
             tampon,
+            panne,
         })
+    }
+
+    /// La sortie a signalé une erreur : à rouvrir (voir `App::ui`).
+    pub fn en_panne(&self) -> bool {
+        self.panne.load(Ordering::Relaxed)
     }
 
     /// Échantillons stéréo entrelacés (G, D, G, D…).
@@ -59,7 +69,7 @@ impl Sortie {
     }
 }
 
-fn ouvrir_flux(tampon: Arc<Mutex<VecDeque<f32>>>) -> Option<cpal::Stream> {
+fn ouvrir_flux(tampon: Arc<Mutex<VecDeque<f32>>>, panne: Arc<AtomicBool>) -> Option<cpal::Stream> {
     let hote = cpal::default_host();
     let peripherique = hote.default_output_device()?;
     // raccourci : 48 kHz stéréo demandés tels quels, sans rééchantillonnage si le périphérique
@@ -84,7 +94,7 @@ fn ouvrir_flux(tampon: Arc<Mutex<VecDeque<f32>>>) -> Option<cpal::Stream> {
                     *s = t.pop_front().unwrap_or(0.0);
                 }
             },
-            |_| {},
+            move |_| panne.store(true, Ordering::Relaxed),
             None,
         )
         .ok()?;

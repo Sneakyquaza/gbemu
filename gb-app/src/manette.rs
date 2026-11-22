@@ -3,6 +3,7 @@
 //! lu par les profils de touches ; l'[`Etat`] positionnel sert à la navigation des menus.
 
 use gilrs::{Axis, Button, EventType, Gilrs};
+use std::sync::{Arc, Mutex};
 
 /// Boutons logiques (bits) pour la navigation des menus.
 pub mod b {
@@ -58,7 +59,7 @@ pub const ZONE_MORTE: f32 = 0.25;
 pub const SEUIL_AXE: f32 = 0.5;
 
 /// Instantané d'une manette branchée.
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, PartialEq)]
 pub struct Pad {
     /// Identifiant gilrs de la session (change au rebranchement).
     pub id: usize,
@@ -73,7 +74,7 @@ pub struct Pad {
     pub axes_appuis: u8,
 }
 
-fn bit_bouton(btn: Button) -> u32 {
+pub fn bit_bouton(btn: Button) -> u32 {
     BOUTONS
         .iter()
         .position(|e| e.0 == btn)
@@ -231,7 +232,7 @@ pub fn nom_axe(axe: Axis, positif: bool) -> &'static str {
 }
 
 pub struct Manettes {
-    gilrs: Option<Gilrs>,
+    partage: Arc<Mutex<Partage>>,
     pads: Vec<Pad>,
     tenus: u16,
     /// Directions : instant de la prochaine répétition.
@@ -240,21 +241,91 @@ pub struct Manettes {
     branchees: Vec<(String, String)>,
 }
 
+/// Ce que le fil de sondage publie : instantané des manettes (sans fronts) et branchements.
+#[derive(Default)]
+struct Partage {
+    pads: Vec<Pad>,
+    branchees: Vec<(String, String)>,
+}
+
 #[derive(Default, Clone, Copy)]
 pub struct Etat {
     /// Nouveaux appuis (et répétitions des directions tenues).
     pub appuis: u16,
     pub connectee: bool,
+    /// Un bouton ou un stick est tenu : l'interface doit continuer à lire (répétition, accords).
+    pub tenus: bool,
 }
 
 fn hex(o: [u8; 16]) -> String {
     o.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Boutons et sticks tenus de chaque manette branchée.
+fn instantane(g: &Gilrs) -> Vec<Pad> {
+    let mut pads = Vec::new();
+    for (id, pad) in g.gamepads() {
+        let mut p = Pad {
+            id: id.into(),
+            uuid: hex(pad.uuid()),
+            nom: pad.name().to_string(),
+            ..Pad::default()
+        };
+        for (i, (btn, _, _)) in BOUTONS.iter().enumerate() {
+            if pad.is_pressed(*btn) {
+                p.tenus |= 1 << i;
+            }
+        }
+        for paire in [0, 2] {
+            let x = pad.value(AXES[paire].0);
+            let y = pad.value(AXES[paire + 1].0);
+            let (sx, sy) = sens_stick(x, y);
+            for (k, s) in [(paire, sx), (paire + 1, sy)] {
+                if let Some(positif) = s {
+                    p.axes |= 1 << (2 * k + positif as usize);
+                }
+            }
+        }
+        pads.push(p);
+    }
+    pads
+}
+
+/// Fil de sondage : dort jusqu'au prochain événement gilrs, publie l'instantané et réveille
+/// l'interface seulement s'il a changé (le bruit d'un stick au repos ne redessine rien).
+fn sonder(partage: Arc<Mutex<Partage>>, reveil: impl Fn()) {
+    let Ok(mut g) = Gilrs::new() else { return };
+    loop {
+        let mut branchees = Vec::new();
+        let mut ev = g.next_event_blocking(None);
+        while let Some(e) = ev {
+            if e.event == EventType::Connected {
+                let p = g.gamepad(e.id);
+                branchees.push((hex(p.uuid()), p.name().to_string()));
+            }
+            ev = g.next_event();
+        }
+        let pads = instantane(&g);
+        let mut s = partage.lock().unwrap_or_else(|e| e.into_inner());
+        if pads != s.pads || !branchees.is_empty() {
+            s.pads = pads;
+            s.branchees.extend(branchees);
+            drop(s);
+            reveil();
+        }
+    }
+}
+
 impl Manettes {
-    pub fn ouvrir() -> Manettes {
+    /// Lance le fil de sondage ; `reveil` redemande une image à chaque changement.
+    pub fn ouvrir(reveil: impl Fn() + Send + 'static) -> Manettes {
+        let partage = Arc::new(Mutex::new(Partage::default()));
+        let p = Arc::clone(&partage);
+        let _ = std::thread::Builder::new()
+            .name("manettes".into())
+            .spawn(move || sonder(p, reveil));
         Manettes {
-            gilrs: Gilrs::new().ok(),
+            partage,
             pads: Vec::new(),
             tenus: 0,
             repetition: 0.0,
@@ -273,39 +344,17 @@ impl Manettes {
     }
 
     pub fn lire(&mut self, maintenant: f64) -> Etat {
-        let Some(g) = self.gilrs.as_mut() else {
-            return Etat::default();
+        let actuels = {
+            let mut s = self.partage.lock().unwrap_or_else(|e| e.into_inner());
+            self.branchees.append(&mut s.branchees);
+            s.pads.clone()
         };
-        while let Some(ev) = g.next_event() {
-            if ev.event == EventType::Connected {
-                let p = g.gamepad(ev.id);
-                self.branchees.push((hex(p.uuid()), p.name().to_string()));
-            }
-        }
         let precedents = std::mem::take(&mut self.pads);
         let mut tenus = 0;
-        for (id, pad) in g.gamepads() {
-            let id: usize = id.into();
-            let mut p = Pad {
-                id,
-                uuid: hex(pad.uuid()),
-                nom: pad.name().to_string(),
-                ..Pad::default()
-            };
-            for (i, (btn, _, bit)) in BOUTONS.iter().enumerate() {
-                if pad.is_pressed(*btn) {
-                    p.tenus |= 1 << i;
+        for mut p in actuels {
+            for (i, (_, _, bit)) in BOUTONS.iter().enumerate() {
+                if p.tenus & (1 << i) != 0 {
                     tenus |= bit;
-                }
-            }
-            for paire in [0, 2] {
-                let x = pad.value(AXES[paire].0);
-                let y = pad.value(AXES[paire + 1].0);
-                let (sx, sy) = sens_stick(x, y);
-                for (k, s) in [(paire, sx), (paire + 1, sy)] {
-                    if let Some(positif) = s {
-                        p.axes |= 1 << (2 * k + positif as usize);
-                    }
                 }
             }
             // Le stick gauche navigue dans les menus comme la croix.
@@ -321,7 +370,7 @@ impl Manettes {
             if p.axe(Axis::LeftStickY, false) {
                 tenus |= b::BAS;
             }
-            let avant = precedents.iter().find(|q| q.id == id);
+            let avant = precedents.iter().find(|q| q.id == p.id);
             p.appuis = p.tenus & !avant.map_or(0, |q| q.tenus);
             p.axes_appuis = p.axes & !avant.map_or(0, |q| q.axes);
             self.pads.push(p);
@@ -336,7 +385,12 @@ impl Manettes {
             self.repetition = maintenant + 0.075;
         }
         self.tenus = tenus;
-        Etat { appuis, connectee }
+        let tenus = self.pads.iter().any(|p| p.tenus != 0 || p.axes != 0);
+        Etat {
+            appuis,
+            connectee,
+            tenus,
+        }
     }
 }
 

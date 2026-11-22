@@ -2,7 +2,7 @@
 //! d'accroche unique de tous les raccourcis), profils clavier et manettes, conflits,
 //! fichier `touches.json` (versionné, écriture atomique, valeurs inconnues ignorées).
 
-use crate::manette::{self, Famille, Pad, AXES, BOUTONS};
+use crate::manette::{self, bit_bouton, Famille, Pad, AXES, BOUTONS};
 use crate::sauve;
 use eframe::egui::{self, Key, Modifiers};
 use gilrs::{Axis, Button};
@@ -535,9 +535,30 @@ impl Profil {
 
     /// Bits `gb_core` des boutons tenus (directions opposées annulées, turbo compris).
     pub fn boutons_tenus(&self, c: &Clavier, pad: Option<&Pad>, maintenant: f64) -> u16 {
+        // Les boutons d'un accord tenu (Select+Start…) vont au raccourci, pas au jeu.
+        let masque = pad.map_or(0, |p| {
+            self.raccourcis
+                .iter()
+                .flat_map(|(_, l)| l)
+                .fold(0, |m, e| match *e {
+                    Entree::Bouton {
+                        bouton,
+                        avec: Some(a),
+                    } if p.tenu(bouton) && p.tenu(a) => m | bit_bouton(bouton) | bit_bouton(a),
+                    _ => m,
+                })
+        });
+        let filtre = pad.map(|p| Pad {
+            tenus: p.tenus & !masque,
+            ..p.clone()
+        });
+        let pad = filtre.as_ref();
         let mut v = 0u16;
         for b in Bouton::TOUS {
-            if self.boutons[b as usize].iter().any(|e| tenue(e, c, pad)) {
+            if self.boutons[b as usize]
+                .iter()
+                .any(|e| tenue(e, c, pad, false))
+            {
                 v |= b.bit();
             }
         }
@@ -555,7 +576,7 @@ impl Profil {
     pub fn tenue(&self, a: Action, c: &Clavier, pad: Option<&Pad>) -> bool {
         self.entrees(Cible::Action(a))
             .iter()
-            .any(|e| tenue(e, c, pad))
+            .any(|e| tenue(e, c, pad, true))
     }
 
     pub fn appuyee(&self, a: Action, c: &Clavier, pad: Option<&Pad>) -> bool {
@@ -627,11 +648,17 @@ impl Profil {
     }
 }
 
-fn tenue(e: &Entree, c: &Clavier, pad: Option<&Pad>) -> bool {
+/// `exact` (raccourcis) : Maj exact aussi, Maj+Tab ne tient pas l'avance rapide de Tab.
+fn tenue(e: &Entree, c: &Clavier, pad: Option<&Pad>, exact: bool) -> bool {
     match *e {
         Entree::Touche { touche, maj, ctrl } => {
             // Ctrl exact (Ctrl+Z n'appuie pas sur B), Maj seulement si demandé.
-            c.tenues.contains(&touche) && (!maj || c.mods.shift) && ctrl == c.mods.command
+            let maj_ok = if exact {
+                maj == c.mods.shift
+            } else {
+                !maj || c.mods.shift
+            };
+            c.tenues.contains(&touche) && maj_ok && ctrl == c.mods.command
         }
         Entree::Bouton { bouton, avec } => {
             pad.is_some_and(|p| p.tenu(bouton) && avec.is_none_or(|a| p.tenu(a)))
@@ -719,8 +746,9 @@ impl Touches {
     }
 
     pub fn charger(chemin: &Path) -> Touches {
-        sauve::lire(chemin)
-            .map(|d| Touches::depuis_json(&String::from_utf8_lossy(&d)))
+        // JSON illisible : la copie `.bak` (ou `.tmp`) prend le relais, sinon les défauts.
+        sauve::lire_json::<Value>(chemin)
+            .map(|v| Touches::depuis_valeur(&v))
             .unwrap_or_default()
     }
 
@@ -744,10 +772,14 @@ impl Touches {
     }
 
     /// Lecture tolérante : fichier illisible → défauts ; champ ou valeur inconnus → ignorés.
+    #[cfg(test)]
     pub fn depuis_json(texte: &str) -> Touches {
-        let Ok(v) = serde_json::from_str::<Value>(texte) else {
-            return Touches::default();
-        };
+        serde_json::from_str::<Value>(texte)
+            .map(|v| Touches::depuis_valeur(&v))
+            .unwrap_or_default()
+    }
+
+    fn depuis_valeur(v: &Value) -> Touches {
         let mut t = Touches::default();
         if let Some(c) = v.get("clavier") {
             t.clavier = Profil::depuis_json(c, Profil::clavier());
@@ -964,6 +996,24 @@ mod tests {
     }
 
     #[test]
+    fn accords_et_maj_ne_fuient_pas() {
+        let t = Touches::default();
+        let c = Clavier::default();
+        // Select+Start (pause), Select+R1 (sauver) : rien ne part au jeu.
+        let combo = pad(&[Button::Select, Button::Start], &[]);
+        assert_eq!(t.boutons(&c, &[combo], 0.5), 0);
+        let sauver = pad(&[Button::Select, Button::RightTrigger], &[]);
+        assert_eq!(t.boutons(&c, &[sauver], 0.5), 0);
+        // Hors accord, Select et R restent des boutons du jeu.
+        let seul = pad(&[Button::Select], &[]);
+        assert_eq!(t.boutons(&c, &[seul], 0.5), g::SELECT);
+        // Maj+Tab bascule l'avance rapide sans la tenir.
+        let maj_tab = appui(Key::Tab, true);
+        assert!(!t.tenue(Action::AvanceRapide, &maj_tab, &[]));
+        assert!(t.tenue(Action::AvanceRapide, &clavier(&[Key::Tab]), &[]));
+    }
+
+    #[test]
     fn defauts_sans_conflit() {
         for p in [Profil::clavier(), Profil::manette()] {
             let mut vus = Vec::new();
@@ -1083,20 +1133,24 @@ mod tests {
 
     #[test]
     fn persistance_atomique() {
-        let dossier = std::env::temp_dir().join(format!("gbemu-touches-{}", std::process::id()));
-        let chemin = Touches::chemin(&dossier);
+        let d = crate::sauve::DossierTest::new("touches");
+        let dossier = &d.0;
+        let chemin = Touches::chemin(dossier);
         let mut t = Touches::default();
         t.clavier
             .attribuer(Cible::Bouton(Bouton::Start), t_simple(Key::P));
         t.enregistrer(&chemin).unwrap();
         assert_eq!(Touches::charger(&chemin), t);
         assert!(!chemin.with_extension("tmp").exists());
+        // Fichier abîmé : la copie `.bak` reprend la main.
+        std::fs::copy(&chemin, chemin.with_extension("bak")).unwrap();
+        std::fs::write(&chemin, b"{\"clavier\": [tronqu").unwrap();
+        assert_eq!(Touches::charger(&chemin), t);
         // Fichier manquant : défauts.
         assert_eq!(
             Touches::charger(&dossier.join("absent.json")),
             Touches::default()
         );
-        let _ = std::fs::remove_dir_all(&dossier);
     }
 
     #[test]

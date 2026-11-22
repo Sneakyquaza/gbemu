@@ -105,7 +105,6 @@ pub const FOND: Color32 = NUIT.fond;
 pub const FOND_JEU: Color32 = NUIT.fond_jeu;
 #[allow(dead_code)]
 pub const SURFACE: Color32 = NUIT.surface;
-pub const SURFACE_HAUTE: Color32 = NUIT.surface_haute;
 #[allow(dead_code)]
 pub const TRAIT: Color32 = rgb(0x3A, 0x3D, 0x5C);
 pub const TEXTE: Color32 = NUIT.texte;
@@ -514,7 +513,20 @@ fn couleur_etiquette(p: Plateforme, titre: &str) -> Color32 {
 
 /// Puce de touche (« Entrée », « F11 »…) suivie de son action. Rend la largeur occupée.
 pub fn puce(painter: &Painter, pos: Pos2, touche: &str, action: &str) -> f32 {
+    puce_avec(painter, pos, touche, action, j())
+}
+
+/// Largeur qu'occupera [`puce`] (pour mettre en page avant de dessiner).
+pub fn largeur_puce(painter: &Painter, touche: &str, action: &str) -> f32 {
     let t = j();
+    ligne(painter, touche, moyen(12.5), t.texte).size().x
+        + 22.0
+        + ligne(painter, action, regulier(13.5), t.doux).size().x
+}
+
+/// [`puce`] aux couleurs d'un thème donné : [`NUIT`] sur le verre sombre du jeu, quel que
+/// soit le thème choisi.
+pub fn puce_avec(painter: &Painter, pos: Pos2, touche: &str, action: &str, t: &Jetons) -> f32 {
     let gt = ligne(painter, touche, moyen(12.5), t.texte);
     let ga = ligne(painter, action, regulier(13.5), t.doux);
     let r = Rect::from_min_size(
@@ -537,6 +549,26 @@ pub fn puce(painter: &Painter, pos: Pos2, touche: &str, action: &str) -> f32 {
     let wa = ga.size().x;
     painter.galley(Pos2::new(xa, pos.y - ga.size().y * 0.5), ga, t.doux);
     xa + wa - pos.x
+}
+
+/// Icône de la fenêtre et de la barre des tâches (la même que celle de l'exe Windows).
+pub fn icone_fenetre() -> egui::IconData {
+    let mut dec = png::Decoder::new(std::io::Cursor::new(include_bytes!(
+        "../assets/icone-64.png"
+    )));
+    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA);
+    let lu = dec.read_info().ok().and_then(|mut l| {
+        let mut rgba = vec![0; l.output_buffer_size()];
+        let info = l.next_frame(&mut rgba).ok()?;
+        rgba.truncate(info.buffer_size());
+        (info.color_type == png::ColorType::Rgba).then_some((rgba, info.width, info.height))
+    });
+    let (rgba, width, height) = lu.unwrap_or_default();
+    egui::IconData {
+        rgba,
+        width,
+        height,
+    }
 }
 
 // ----- Matières : ombres, panneaux, lueurs, vignettage, grain -----
@@ -819,5 +851,14 @@ pub fn icone(p: &Painter, genre: Icone, c: Pos2, taille: f32, couleur: Color32) 
                 Stroke::new((1.4 * s).max(1.0), couleur),
             )));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn icone_lisible() {
+        let i = super::icone_fenetre();
+        assert_eq!((i.width, i.height, i.rgba.len()), (64, 64, 64 * 64 * 4));
     }
 }

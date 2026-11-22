@@ -218,7 +218,7 @@ fn rom_de(fichier: &Path, interne: Option<String>, ext: &str, donnees: &[u8], cr
 }
 
 /// Analyse un fichier : une ROM en vrac ou toutes les ROM d'une archive. Jamais de panique.
-fn analyser(fichier: &Path) -> Vec<Rom> {
+pub fn analyser(fichier: &Path) -> Vec<Rom> {
     match genre(fichier) {
         Some(Genre::Rom) => {
             let Some(ext) = ext_rom(&fichier.to_string_lossy()) else {

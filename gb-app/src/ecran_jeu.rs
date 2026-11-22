@@ -675,7 +675,7 @@ impl App {
             let mut pa = pa;
             pa.multiply_opacity(a);
             for (t, ac) in puces {
-                x += puce(&pa, Pos2::new(x, y), t, ac) + 22.0;
+                x += puce_avec(&pa, Pos2::new(x, y), t, ac, &NUIT) + 22.0;
             }
             ui.ctx().request_repaint();
         }
@@ -1107,42 +1107,44 @@ impl App {
             let rep = ui.interact(rt, Id::unique(("etat", k)), Sense::click());
             let choisi = k == sel;
             let rm = Rect::from_min_size(rt.min, Vec2::new(lt, hm));
+            // La case garde le fond sombre du jeu : encre de nuit dans les deux thèmes.
+            let n = &NUIT;
             p.rect_filled(rt, CornerRadius::same(10), t.fond_jeu);
             match (info, self.hud.minis.get(k).and_then(|m| m.as_ref())) {
                 (Some(_), Some(tex)) => {
                     p.image(tex.id(), rm, uv(), Color32::WHITE);
                 }
                 (Some(_), None) => {
-                    let g = ligne(&p, "?", pixel(20.0), t.discret);
-                    p.galley(rm.center() - g.size() * 0.5, g, t.discret);
+                    let g = ligne(&p, "?", pixel(20.0), n.discret);
+                    p.galley(rm.center() - g.size() * 0.5, g, n.discret);
                 }
                 (None, _) => {
                     let c = rm.center();
-                    let tr = Stroke::new(2.0, t.discret);
+                    let tr = Stroke::new(2.0, n.discret);
                     p.line_segment([c - Vec2::new(9.0, 0.0), c + Vec2::new(9.0, 0.0)], tr);
                     p.line_segment([c - Vec2::new(0.0, 9.0), c + Vec2::new(0.0, 9.0)], tr);
                 }
             }
             let yb = rm.bottom() + 23.0;
-            let g = ligne(&p, &(k + 1).to_string(), pixel(15.0), t.texte);
+            let g = ligne(&p, &(k + 1).to_string(), pixel(15.0), n.texte);
             let gl = g.size().x;
             p.galley(
                 Pos2::new(rt.left() + 10.0, yb - g.size().y * 0.5),
                 g,
-                t.texte,
+                n.texte,
             );
             let date = match info {
                 Some(i) => etats::date_relative(i.date, maintenant),
                 None => "vide".into(),
             };
-            let g = bloc(&p, &date, regulier(12.5), t.doux, lt - gl - 44.0, 1);
+            let g = bloc(&p, &date, regulier(12.5), n.doux, lt - gl - 44.0, 1);
             p.galley(
                 Pos2::new(rt.left() + 18.0 + gl, yb - g.size().y * 0.5),
                 g,
-                t.doux,
+                n.doux,
             );
             if info.is_some_and(|i| i.verrou) {
-                cadenas(&p, Pos2::new(rt.right() - 14.0, yb), t.doux);
+                cadenas(&p, Pos2::new(rt.right() - 14.0, yb), n.doux);
             }
             if k + 1 == courant {
                 p.circle_filled(Pos2::new(rm.right() - 10.0, rm.top() + 10.0), 4.0, t.accent);
@@ -1153,11 +1155,11 @@ impl App {
                     &p,
                     "Supprimer ? Suppr pour confirmer",
                     moyen(13.0),
-                    t.texte,
+                    n.texte,
                     lt - 16.0,
                     3,
                 );
-                p.galley(rm.center() - g.size() * 0.5, g, t.texte);
+                p.galley(rm.center() - g.size() * 0.5, g, n.texte);
             }
             if choisi {
                 p.rect_stroke(
@@ -1182,14 +1184,23 @@ impl App {
         }
         let y = carte.bottom() - 40.0;
         let mut x = carte.left() + 28.0;
-        for (tc, ac) in [
+        let mut puces = [
             ("Entrée", "Charger"),
             ("S", "Sauver ici"),
             ("V", "Verrouiller"),
             ("Suppr", "Supprimer"),
             ("Ctrl+Z", "Annuler le chargement"),
             ("Échap", "Fermer"),
-        ] {
+        ];
+        // Fenêtre étroite : libellé court plutôt qu'un pied qui déborde du panneau.
+        let largeur: f32 = puces
+            .iter()
+            .map(|(tc, ac)| largeur_puce(&p, tc, ac) + 20.0)
+            .sum();
+        if largeur - 20.0 > lc - 56.0 {
+            puces[4].1 = "Annuler";
+        }
+        for (tc, ac) in puces {
             x += puce(&p, Pos2::new(x, y), tc, ac) + 20.0;
         }
         if let Some((k, droit)) = clic {

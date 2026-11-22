@@ -87,6 +87,7 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("gbemu")
             .with_app_id("gbemu")
+            .with_icon(dessin::icone_fenetre())
             .with_inner_size(taille)
             .with_min_inner_size([720.0, 480.0])
             .with_drag_and_drop(true),

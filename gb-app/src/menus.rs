@@ -7,7 +7,13 @@ use crate::sons_ui::Son;
 pub(super) enum GenreMenu {
     Pause,
     Reglages,
+    /// Licences et à propos (texte défilant), ouvert depuis les réglages.
+    Licences,
 }
+
+/// Licences des polices, du BIOS libre, des données et des bibliothèques (aussi livré à côté
+/// de l'exe sous le nom `LICENCES.txt`).
+const LICENCES: &str = include_str!("../assets/licences/LICENCES.txt");
 
 #[derive(Clone, Copy, PartialEq)]
 enum Act {
@@ -26,6 +32,8 @@ enum Act {
     SonsUi,
     Intro,
     Touches,
+    HorsLigne,
+    Licences,
     Fermer,
 }
 
@@ -36,6 +44,8 @@ pub(super) struct Menu {
     edition: Option<String>,
     /// Instant d'ouverture (animations d'entrée).
     ouvert_a: f64,
+    /// Défilement du texte des licences (points).
+    defil: f32,
 }
 
 impl App {
@@ -47,6 +57,7 @@ impl App {
             sel: 0,
             edition: None,
             ouvert_a: self.t_prec,
+            defil: 0.0,
         });
         if genre == GenreMenu::Pause {
             self.figer_image_floue();
@@ -89,6 +100,7 @@ impl App {
                 ));
                 v.push(("Retour à la bibliothèque".into(), None, Act::Quitter));
             }
+            GenreMenu::Licences => {}
             GenreMenu::Reglages => {
                 v.push((
                     "Dossier des jeux".into(),
@@ -136,6 +148,12 @@ impl App {
                     oui_non(!self.config.sans_intro),
                     Act::Intro,
                 ));
+                v.push((
+                    "Hors ligne".into(),
+                    oui_non(self.config.hors_ligne),
+                    Act::HorsLigne,
+                ));
+                v.push(("Licences et à propos".into(), None, Act::Licences));
                 v.push(("Fermer".into(), None, Act::Fermer));
             }
         }
@@ -221,6 +239,12 @@ impl App {
                 self.config.sans_intro = !self.config.sans_intro;
                 self.config.enregistrer(&self.chemins.config());
             }
+            Act::HorsLigne => {
+                // `enregistrer` publie aussi le réglage aux fils de téléchargement.
+                self.config.hors_ligne = !self.config.hors_ligne;
+                self.config.enregistrer(&self.chemins.config());
+            }
+            Act::Licences => self.ouvrir_menu(GenreMenu::Licences),
             Act::Touches => {
                 let genre = self.menu.take().map(|m| m.genre);
                 self.ouvrir_touches(genre);
@@ -229,6 +253,7 @@ impl App {
     }
 
     fn choisir_dossier(&mut self, d: PathBuf) {
+        self.opts.jeux = None;
         self.config.dossier_jeux = Some(d);
         self.config.enregistrer(&self.chemins.config());
         self.lancer_analyse(false);
@@ -243,6 +268,10 @@ impl App {
     pub(super) fn entrees_menu(&mut self, evts: &[Event], pad: Etat) {
         let Some(m) = &self.menu else { return };
         let genre = m.genre;
+        if genre == GenreMenu::Licences {
+            self.entrees_licences(evts, pad);
+            return;
+        }
         let n = self.elements(genre).len();
         let mut valider = pad.appuis & (b::SUD | b::OUEST) != 0;
         let mut retour = pad.appuis & (b::EST | b::START) != 0;
@@ -359,6 +388,10 @@ impl App {
         let Some(m) = &self.menu else { return };
         if m.genre == GenreMenu::Pause {
             self.dessiner_pause(ui);
+            return;
+        }
+        if m.genre == GenreMenu::Licences {
+            self.dessiner_licences(ui);
             return;
         }
         let jt = j();
@@ -500,6 +533,121 @@ impl App {
             ui.ctx().request_repaint();
         }
     }
+    fn entrees_licences(&mut self, evts: &[Event], pad: Etat) {
+        let mut retour = pad.appuis & (b::EST | b::START | b::SUD) != 0;
+        let mut d = 0.0;
+        if pad.appuis & b::HAUT != 0 {
+            d -= 60.0;
+        }
+        if pad.appuis & b::BAS != 0 {
+            d += 60.0;
+        }
+        for e in evts {
+            if let Event::Key {
+                key, pressed: true, ..
+            } = e
+            {
+                match key {
+                    Key::ArrowUp => d -= 60.0,
+                    Key::ArrowDown => d += 60.0,
+                    Key::PageUp => d -= 400.0,
+                    Key::PageDown | Key::Space => d += 400.0,
+                    Key::Home => d = f32::NEG_INFINITY,
+                    Key::End => d = f32::INFINITY,
+                    Key::Escape | Key::F2 | Key::Enter | Key::Backspace => retour = true,
+                    _ => {}
+                }
+            }
+        }
+        if retour {
+            self.son(Son::Retour);
+            self.ouvrir_menu(GenreMenu::Reglages);
+            let k = self
+                .elements(GenreMenu::Reglages)
+                .iter()
+                .position(|e| e.2 == Act::Licences);
+            if let (Some(m), Some(k)) = (&mut self.menu, k) {
+                m.sel = k;
+            }
+            return;
+        }
+        if let Some(m) = &mut self.menu {
+            // Borné au dessin (hauteur du texte connue là).
+            m.defil = (m.defil + d).max(0.0);
+        }
+    }
+
+    /// Licences et à propos : texte intégré qui défile (flèches, molette, Page préc./suiv.).
+    fn dessiner_licences(&mut self, ui: &mut egui::Ui) {
+        let Some(m) = &self.menu else { return };
+        let jt = j();
+        let age = (self.t_prec - m.ouvert_a) as f32;
+        let defil = m.defil;
+        let ecran = ui.max_rect();
+        let p = ui.painter().clone();
+        let t = d::sortie(age / d::duree_fondu(DUREE_MENU).max(0.001));
+        p.rect_filled(
+            ecran,
+            CornerRadius::ZERO,
+            alpha(
+                Color32::from_rgb(10, 11, 18),
+                if jt.jour { 0.45 } else { 0.72 } * t,
+            ),
+        );
+        let l = 820.0f32.min(ecran.width() - 48.0);
+        let h = ecran.height() - 48.0;
+        let r = Rect::from_center_size(ecran.center(), Vec2::new(l, h));
+        let mut p = p;
+        p.multiply_opacity(t);
+        d::ombre(&p, r, 18.0, 18.0, 48.0, 1.0);
+        panneau(&p, r, 18.0, jt.surface, Some(jt.trait_));
+        let g = ligne(&p, "Licences et à propos", gras(22.0), jt.texte);
+        p.galley(Pos2::new(r.left() + 28.0, r.top() + 24.0), g, jt.texte);
+        let sous = format!(
+            "gbemu {} · logiciels libres et données utilisés",
+            env!("CARGO_PKG_VERSION")
+        );
+        let g = bloc(&p, &sous, regulier(14.0), jt.doux, l - 56.0, 1);
+        p.galley(Pos2::new(r.left() + 28.0, r.top() + 56.0), g, jt.doux);
+
+        let zone = Rect::from_min_max(
+            Pos2::new(r.left() + 28.0, r.top() + 92.0),
+            Pos2::new(r.right() - 20.0, r.bottom() - 56.0),
+        );
+        let g = bloc(
+            &p,
+            LICENCES,
+            regulier(13.0),
+            jt.doux,
+            zone.width() - 12.0,
+            usize::MAX,
+        );
+        let max = (g.size().y - zone.height()).max(0.0);
+        let molette = ui.input(|i| i.smooth_scroll_delta.y);
+        let defil = (defil - molette).clamp(0.0, max);
+        if let Some(m) = &mut self.menu {
+            m.defil = defil;
+        }
+        p.with_clip_rect(zone)
+            .galley(zone.min - Vec2::new(0.0, defil), g, jt.doux);
+        // Ascenseur discret.
+        if max > 0.0 {
+            let hb = (zone.height() * zone.height() / (zone.height() + max)).max(24.0);
+            let yb = zone.top() + (zone.height() - hb) * defil / max;
+            p.rect_filled(
+                Rect::from_min_size(Pos2::new(zone.right() + 6.0, yb), Vec2::new(4.0, hb)),
+                CornerRadius::same(2),
+                alpha(jt.doux, 0.5),
+            );
+        }
+        let mut xp = r.left() + 28.0;
+        for (tc, ac) in [("Flèches", "Défiler"), ("Échap", "Retour")] {
+            xp += puce(&p, Pos2::new(xp, r.bottom() - 28.0), tc, ac) + 22.0;
+        }
+        if age < DUREE_MENU {
+            ui.ctx().request_repaint();
+        }
+    }
 }
 
 impl Act {
@@ -514,6 +662,7 @@ impl Act {
                 | Act::Animations
                 | Act::SonsUi
                 | Act::Intro
+                | Act::HorsLigne
         )
     }
 
@@ -910,7 +1059,8 @@ impl App {
         };
         let mut xp = x0;
         for (tch, a) in puces {
-            xp += puce(&p, Pos2::new(xp, ecran.bottom() - 30.0), tch, a) + 22.0;
+            // Sur le verre sombre du jeu : couleurs de nuit dans les deux thèmes.
+            xp += puce_avec(&p, Pos2::new(xp, ecran.bottom() - 30.0), tch, a, &NUIT) + 22.0;
         }
 
         if let Some(m) = &mut self.menu {

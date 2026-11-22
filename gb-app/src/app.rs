@@ -212,13 +212,10 @@ impl App {
         d::installer(&cc.egui_ctx);
         let ctx = cc.egui_ctx.clone();
         let chemins = Chemins::trouver(opts.donnees.clone());
-        let mut config = Config::charger(&chemins.config());
+        let config = Config::charger(&chemins.config());
         d::appliquer_theme(&ctx, config.jour);
         d::reduire_mouvement(config.animations_reduites);
         let hab = ecran_biblio::Habillage::new(&opts, &chemins, &config);
-        if let Some(j) = &opts.jeux {
-            config.dossier_jeux = Some(std::path::absolute(j).unwrap_or_else(|_| j.clone()));
-        }
 
         let mut app = App {
             recherche: opts.recherche.clone().unwrap_or_default(),
@@ -285,27 +282,29 @@ impl App {
         app.jaquettes = Some(Jaquettes::lancer(app.chemins.jaquettes(), reveil(&ctx)));
 
         if let Some(chemin) = app.opts.rom.clone() {
-            let donnees = std::fs::read(&chemin).unwrap_or_default();
-            let ext = chemin
-                .extension()
-                .map(|e| e.to_string_lossy().to_ascii_lowercase())
-                .unwrap_or_default();
-            let rom = Rom {
-                interne: None,
-                taille: 0,
-                crc: crc32fast::hash(&donnees),
-                plateforme: biblio::plateforme(&ext, &donnees),
-                titre_entete: String::new(),
-                fichier: chemin,
+            // `--rom` / « Ouvrir avec » : même analyse que la bibliothèque (64 Mio au plus,
+            // .zip/.7z : première ROM de l'archive).
+            let trop_gros = std::fs::metadata(&chemin).is_ok_and(|m| m.len() > 256 << 20);
+            let rom = if trop_gros {
+                None
+            } else {
+                biblio::analyser(&chemin).into_iter().next()
             };
-            let titre = rom.nom_fichier();
-            app.lancer_partie(rom, titre);
+            match rom {
+                Some(rom) => {
+                    let titre = rom.nom_fichier();
+                    app.lancer_partie(rom, titre);
+                }
+                None => app.dire("Aucune ROM lisible dans ce fichier"),
+            }
         }
         if app.opts.grille {
             app.config.grille = true;
         }
-        if app.opts.menu.as_deref() == Some("reglages") {
-            app.ouvrir_menu(GenreMenu::Reglages);
+        match app.opts.menu.as_deref() {
+            Some("reglages") => app.ouvrir_menu(GenreMenu::Reglages),
+            Some("licences") => app.ouvrir_menu(GenreMenu::Licences),
+            _ => {}
         }
         app.touches = Touches::charger(&Touches::chemin(&app.chemins.donnees));
         if let Some(v) = app
@@ -320,6 +319,10 @@ impl App {
     }
 
     fn dossier_jeux(&self) -> PathBuf {
+        // `--jeux` surcharge la session sans être enregistré dans les réglages.
+        if let Some(j) = &self.opts.jeux {
+            return std::path::absolute(j).unwrap_or_else(|_| j.clone());
+        }
         self.config
             .dossier_jeux
             .clone()
@@ -657,10 +660,26 @@ impl eframe::App for App {
         }
         // Manettes et son ouverts après la première image : le démarrage reste instantané.
         if self.images_ui == 2 {
-            self.manettes = Some(Manettes::ouvrir());
+            self.manettes = Some(Manettes::ouvrir(reveil(&ctx)));
             self.audio = Sortie::ouvrir();
         }
         self.images_ui += 1;
+        // Sortie son disparue : on rouvre la sortie par défaut du moment (sinon, sans son).
+        if self.audio.as_ref().is_some_and(|a| a.en_panne()) {
+            eprintln!("son : sortie perdue, réouverture");
+            self.audio = None;
+            self.audio = Sortie::ouvrir();
+        }
+        // Grand écran (≥ 1000 px de haut) : interface agrandie de 25 % ; le jeu garde son
+        // échelle entière en pixels physiques.
+        let zoom = if ctx.content_rect().height() * ctx.zoom_factor() >= 1000.0 {
+            1.25
+        } else {
+            1.0
+        };
+        if ctx.zoom_factor() != zoom {
+            ctx.set_zoom_factor(zoom);
+        }
 
         self.recevoir();
         self.reconstruire();
@@ -723,8 +742,9 @@ impl eframe::App for App {
         self.dessiner_toast(ui);
         self.dessiner_depot(ui);
         self.dessiner_intro(ui, &evts, pad);
-        if self.manettes.is_some() {
-            // Les manettes se lisent par sondage : on repasse régulièrement.
+        if pad.tenus {
+            // Bouton tenu : répétition des directions et accords lus à chaque image ; sinon le
+            // fil des manettes ne réveille l'interface qu'à un changement.
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
         self.capture(&ctx);

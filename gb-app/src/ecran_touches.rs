@@ -562,7 +562,8 @@ impl App {
         let capture = e.capture.as_ref().map(|c| (c.cible, c.debut));
         let profil = self.profil_de(&o);
 
-        p.rect_filled(ecran, CornerRadius::ZERO, FOND);
+        let jt = j();
+        p.rect_filled(ecran, CornerRadius::ZERO, jt.fond);
         let zone_clic = |r: Rect, id: &str, c: Clic, clics: &mut Vec<Clic>| {
             if ui
                 .interact(r, Id::unique(("touches", id)), Sense::click())
@@ -579,14 +580,14 @@ impl App {
             egui::Align2::LEFT_TOP,
             "Touches",
             gras(30.0),
-            TEXTE,
+            jt.texte,
         );
         p.text(
             Pos2::new(x0, ecran.top() + 66.0),
             egui::Align2::LEFT_TOP,
             "Cliquez un bouton de la console, puis appuyez sur la touche ou le bouton voulu.",
             regulier(14.0),
-            DOUX,
+            jt.doux,
         );
         let mut x = ecran.right() - MARGE;
         let pads_branches: Vec<String> = self.pads().iter().map(|p| p.uuid.clone()).collect();
@@ -599,20 +600,20 @@ impl App {
                     (court, pads_branches.contains(uuid))
                 }
             };
-            let g = ligne(&p, &nom, moyen(14.0), TEXTE);
+            let g = ligne(&p, &nom, moyen(14.0), jt.texte);
             let l = g.size().x + 28.0 + if branche { 14.0 } else { 0.0 };
             let r = Rect::from_min_size(Pos2::new(x - l, ecran.top() + 28.0), Vec2::new(l, 34.0));
             let actif = i == e.onglet;
             p.rect_filled(
                 r,
                 CornerRadius::same(17),
-                if actif { ACCENT } else { SURFACE },
+                if actif { jt.accent } else { jt.surface },
             );
             if !actif {
                 p.rect_stroke(
                     r,
                     CornerRadius::same(17),
-                    Stroke::new(1.0, TRAIT),
+                    Stroke::new(1.0, jt.trait_),
                     StrokeKind::Inside,
                 );
             }
@@ -621,7 +622,7 @@ impl App {
                 p.circle_filled(Pos2::new(tx + 4.0, r.center().y), 4.0, VERT);
                 tx += 14.0;
             }
-            let couleur = if actif { TEXTE } else { DOUX };
+            let couleur = if actif { jt.texte } else { jt.doux };
             p.galley(Pos2::new(tx, r.center().y - g.size().y * 0.5), g, couleur);
             zone_clic(r, &format!("onglet{i}"), Clic::Onglet(i), &mut clics);
             x = r.left() - 10.0;
@@ -644,7 +645,7 @@ impl App {
             p.circle_filled(
                 cadre.center(),
                 cadre.height() * (0.75 - 0.4 * f),
-                alpha(SURFACE_HAUTE, 0.05 + 0.02 * f),
+                alpha(jt.surface_haute, 0.05 + 0.02 * f),
             );
         }
         let mut allumes = e.demo_allumes;
@@ -688,27 +689,27 @@ impl App {
                 let c = console::centre(zone_console, *b);
                 let mut pp = p.clone();
                 pp.multiply_opacity(((*fin - t) as f32 / 0.3).min(1.0));
-                let g = ligne(&p, lib, moyen(13.0), TEXTE);
+                let g = ligne(&p, lib, moyen(13.0), jt.texte);
                 let r = Rect::from_center_size(
                     c - Vec2::new(0.0, 30.0),
                     Vec2::new(g.size().x + 16.0, 26.0),
                 );
-                pp.rect_filled(r, CornerRadius::same(8), SURFACE_HAUTE);
+                pp.rect_filled(r, CornerRadius::same(8), jt.surface_haute);
                 pp.rect_stroke(
                     r,
                     CornerRadius::same(8),
                     Stroke::new(1.0, HALO),
                     StrokeKind::Inside,
                 );
-                pp.galley(r.center() - g.size() * 0.5, g, TEXTE);
+                pp.galley(r.center() - g.size() * 0.5, g, jt.texte);
             }
         }
         // Bulle d'attente à côté du bouton choisi.
         if let Some((Cible::Bouton(b), debut)) = capture {
             let c = console::centre(zone_console, b);
             let texte = "Appuyez sur une touche ou un bouton…";
-            let g = ligne(&p, texte, moyen(14.0), TEXTE);
-            let g2 = ligne(&p, "Échap pour annuler", regulier(12.5), DOUX);
+            let g = ligne(&p, texte, moyen(14.0), jt.texte);
+            let g2 = ligne(&p, "Échap pour annuler", regulier(12.5), jt.doux);
             let l = g.size().x.max(g2.size().x) + 28.0;
             let mut r = Rect::from_min_size(c + Vec2::new(-l * 0.5, -122.0), Vec2::new(l, 58.0));
             let dx = (cadre.left() + 4.0 - r.left()).max(0.0)
@@ -719,7 +720,7 @@ impl App {
                 CornerRadius::same(12),
                 alpha(Color32::BLACK, 0.3),
             );
-            p.rect_filled(r, CornerRadius::same(12), SURFACE_HAUTE);
+            p.rect_filled(r, CornerRadius::same(12), jt.surface_haute);
             p.rect_stroke(
                 r,
                 CornerRadius::same(12),
@@ -733,11 +734,11 @@ impl App {
                     pointe + Vec2::new(8.0, -1.0),
                     pointe + Vec2::new(0.0, 9.0),
                 ],
-                SURFACE_HAUTE,
+                jt.surface_haute,
                 Stroke::NONE,
             ));
-            p.galley(Pos2::new(r.left() + 14.0, r.top() + 9.0), g, TEXTE);
-            p.galley(Pos2::new(r.left() + 14.0, r.top() + 32.0), g2, DOUX);
+            p.galley(Pos2::new(r.left() + 14.0, r.top() + 9.0), g, jt.texte);
+            p.galley(Pos2::new(r.left() + 14.0, r.top() + 32.0), g2, jt.doux);
             let reste = (1.0 - (t - debut) / DELAI_CAPTURE).clamp(0.0, 1.0) as f32;
             let barre = Rect::from_min_size(
                 Pos2::new(r.left() + 12.0, r.bottom() - 5.0),
@@ -754,13 +755,13 @@ impl App {
             (Section::Console, "Console"),
             (Section::Raccourcis, "Raccourcis"),
         ] {
-            let g = ligne(&p, nom, moyen(15.0), TEXTE);
+            let g = ligne(&p, nom, moyen(15.0), jt.texte);
             let r = Rect::from_min_size(Pos2::new(xs, haut), Vec2::new(g.size().x + 8.0, 32.0));
             let actif = e.section == s;
             p.galley(
                 Pos2::new(r.left() + 4.0, r.center().y - g.size().y * 0.5),
                 g,
-                if actif { TEXTE } else { DISCRET },
+                if actif { jt.texte } else { jt.discret },
             );
             if actif {
                 p.rect_filled(
@@ -769,7 +770,7 @@ impl App {
                         Vec2::new(r.width() - 8.0, 3.0),
                     ),
                     CornerRadius::same(1),
-                    ACCENT,
+                    jt.accent,
                 );
             }
             zone_clic(r, nom, Clic::Section(s), &mut clics);
@@ -804,14 +805,14 @@ impl App {
             let en_capture = capture.is_some_and(|c| c.0 == *cible);
             let clig = clignote == Some(*cible) && (t * 8.0).sin() > 0.0;
             if choisie || en_capture {
-                pl.rect_filled(r, CornerRadius::same(10), SURFACE_HAUTE);
+                pl.rect_filled(r, CornerRadius::same(10), jt.surface_haute);
                 pl.rect_filled(
                     Rect::from_min_size(
                         r.left_top() + Vec2::new(0.0, 8.0),
                         Vec2::new(3.0, r.height() - 16.0),
                     ),
                     CornerRadius::same(2),
-                    ACCENT,
+                    jt.accent,
                 );
             }
             if clig {
@@ -830,11 +831,11 @@ impl App {
                 Cible::Bouton(_) => gras(14.5),
                 Cible::Action(_) => regulier(14.5),
             };
-            let g = ligne(&p, &nom, police, TEXTE);
+            let g = ligne(&p, &nom, police, jt.texte);
             pl.galley(
                 Pos2::new(r.left() + 16.0, r.center().y - g.size().y * 0.5),
                 g,
-                if choisie { TEXTE } else { DOUX },
+                if choisie { jt.texte } else { jt.doux },
             );
             let mut cx = r.right() - 12.0;
             if en_capture {
@@ -848,30 +849,30 @@ impl App {
             } else {
                 let entrees = profil.entrees(*cible);
                 if entrees.is_empty() {
-                    let g = ligne(&p, "—", regulier(14.0), DISCRET);
+                    let g = ligne(&p, "—", regulier(14.0), jt.discret);
                     pl.galley(
                         Pos2::new(cx - g.size().x, r.center().y - g.size().y * 0.5),
                         g,
-                        DISCRET,
+                        jt.discret,
                     );
                 }
                 for en in entrees.iter().rev() {
-                    let g = ligne(&p, &en.libelle(fam), moyen(13.0), TEXTE);
+                    let g = ligne(&p, &en.libelle(fam), moyen(13.0), jt.texte);
                     let pr = Rect::from_min_size(
                         Pos2::new(cx - g.size().x - 16.0, r.center().y - 12.0),
                         Vec2::new(g.size().x + 16.0, 24.0),
                     );
-                    pl.rect_filled(pr, CornerRadius::same(6), SURFACE);
+                    pl.rect_filled(pr, CornerRadius::same(6), jt.surface);
                     pl.rect_stroke(
                         pr,
                         CornerRadius::same(6),
-                        Stroke::new(1.0, TRAIT),
+                        Stroke::new(1.0, jt.trait_),
                         StrokeKind::Inside,
                     );
                     pl.galley(
                         Pos2::new(pr.left() + 8.0, pr.center().y - g.size().y * 0.5),
                         g,
-                        TEXTE,
+                        jt.texte,
                     );
                     cx = pr.left() - 8.0;
                 }
@@ -893,7 +894,7 @@ impl App {
             p.rect_filled(
                 Rect::from_min_size(Pos2::new(xf + 8.0, y), Vec2::new(3.0, h)),
                 CornerRadius::same(2),
-                alpha(DOUX, 0.4),
+                alpha(jt.doux, 0.4),
             );
         }
 
@@ -914,13 +915,16 @@ impl App {
         .into_iter()
         .enumerate()
         {
-            let g = ligne(&p, nom, moyen(14.5), TEXTE);
+            let g = ligne(&p, nom, moyen(14.5), jt.texte);
             let r = Rect::from_min_size(Pos2::new(xb, yb), Vec2::new(g.size().x + 32.0, 40.0));
             let survol = ui.rect_contains_pointer(r);
             let (fond, bord) = match (i, t < e.confirmer) {
-                (0, _) => (ACCENT, ACCENT),
+                (0, _) => (jt.accent, jt.accent),
                 (1, true) => (alpha(ORANGE, 0.25), ORANGE),
-                _ => (if survol { SURFACE_HAUTE } else { SURFACE }, TRAIT),
+                _ => (
+                    if survol { jt.surface_haute } else { jt.surface },
+                    jt.trait_,
+                ),
             };
             p.rect_filled(r, CornerRadius::same(20), fond);
             p.rect_stroke(
@@ -929,7 +933,7 @@ impl App {
                 Stroke::new(1.0, bord),
                 StrokeKind::Inside,
             );
-            p.galley(r.center() - g.size() * 0.5, g, TEXTE);
+            p.galley(r.center() - g.size() * 0.5, g, jt.texte);
             zone_clic(r, nom, c, &mut clics);
             xb = r.right() + 12.0;
         }
