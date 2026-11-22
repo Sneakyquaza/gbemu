@@ -602,7 +602,12 @@ impl App {
         }
         let px = acc
             .iter()
-            .map(|c| Color32::from_rgb(c[0] as u8, c[1] as u8, c[2] as u8))
+            .map(|c| {
+                // À moitié désaturé : le verre reste neutre quelle que soit la palette.
+                let l = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+                let m = |x: f32| ((x + l) * 0.5) as u8;
+                Color32::from_rgb(m(c[0]), m(c[1]), m(c[2]))
+            })
             .collect();
         let img = ColorImage::new([L, H], px);
         match &mut self.hab.flou {
@@ -649,7 +654,7 @@ impl App {
                 Color32::WHITE,
             );
         }
-        p.rect_filled(ecran, CornerRadius::ZERO, Color32::from_black_alpha(140));
+        p.rect_filled(ecran, CornerRadius::ZERO, Color32::from_black_alpha(155));
         d::vignette(&p, ecran);
         d::grain(&ctx, &p, ecran, 0.03);
 
@@ -681,7 +686,7 @@ impl App {
             .map(|crc| crate::stats::duree_jeu(self.hab.stats.jeu(crc).temps))
             .unwrap_or_default();
         let sous = if temps.is_empty() {
-            "Partie en pause".to_string()
+            "Moins d'une minute de jeu".to_string()
         } else {
             format!("{temps} de jeu")
         };
@@ -842,7 +847,7 @@ impl App {
         // À droite : l'image du jeu, nette et figée, qui luit doucement sous la lampe.
         let xd = x0 + cw + marge;
         let zone = Rect::from_min_max(
-            Pos2::new(xd, y_titre + 4.0),
+            Pos2::new(xd, haut - 10.0),
             Pos2::new(ecran.right() - marge, bas),
         );
         if zone.width() > 240.0 {
@@ -851,10 +856,7 @@ impl App {
                 let l = (zone.width() - 20.0)
                     .min((zone.height() - 20.0) * ratio)
                     .min(520.0);
-                let r = Rect::from_min_size(
-                    Pos2::new(zone.center().x - l * 0.5, zone.top() + 10.0),
-                    Vec2::new(l, l / ratio),
-                );
+                let r = Rect::from_center_size(zone.center(), Vec2::new(l, l / ratio));
                 let clair = self.config.palette.teintes()[0];
                 d::lueur(
                     &p,

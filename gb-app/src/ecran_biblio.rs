@@ -634,7 +634,7 @@ impl App {
         fondu_bas(
             &p,
             Rect::from_min_max(
-                Pos2::new(ecran.left(), grille.bottom() - 40.0),
+                Pos2::new(ecran.left(), grille.bottom() - 64.0),
                 Pos2::new(ecran.right(), grille.bottom()),
             ),
         );
@@ -960,7 +960,7 @@ fn carte(
         p,
         details,
         regulier(12.5),
-        jt.discret.lerp_to_gamma(jt.doux, 0.6),
+        jt.doux,
         (droite - r.left() - 15.0).max(10.0),
         1,
     );
