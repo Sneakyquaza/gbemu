@@ -11,6 +11,7 @@ mod etats;
 mod intro;
 mod jaquettes;
 mod jeu;
+mod machine;
 mod manette;
 mod rembobinage;
 mod sauve;
@@ -21,7 +22,7 @@ mod touches;
 use std::path::PathBuf;
 use std::time::Instant;
 
-const AIDE: &str = "gbemu [--jeux DOSSIER] [--donnees DOSSIER] [--rom FICHIER.gb]
+const AIDE: &str = "gbemu [--jeux DOSSIER] [--donnees DOSSIER] [--rom FICHIER.gb|.gbc|.gba]
   Vérification visuelle : [--demo] [--capture SORTIE.png] [--images N] [--taille LxH]
   [--menu pause|reglages|touches[-raccourcis|-capture|-allume|-conflit]] [--grille] [--recherche TEXTE] [--selection N]";
 

@@ -69,8 +69,8 @@ impl App {
                 v.push(("Reprendre".into(), None, Act::Reprendre));
                 v.push(("États".into(), Some("Sauver, charger".into()), Act::Etats));
                 v.push(("Écran".into(), Some(ecran.into()), Act::Grille));
-                // GBC : palette DMG sans objet.
-                if !self.partie.as_ref().is_some_and(|p| p.gb.is_cgb()) {
+                // GBC, GBA : palette DMG sans objet.
+                if !self.partie.as_ref().is_some_and(|p| p.gb.couleur()) {
                     v.push((
                         "Palette".into(),
                         Some(self.config.palette.nom().into()),
@@ -568,13 +568,13 @@ impl App {
     /// agrandie avec lissage derrière le menu pause.
     pub(super) fn figer_image_floue(&mut self) {
         let Some(partie) = &self.partie else { return };
-        const L: usize = gb_core::LARGEUR / 4;
-        const H: usize = gb_core::HAUTEUR / 4;
-        let rgb = crate::etats::ecran_rgb(&partie.gb, &self.config.palette.teintes());
-        let mut acc = vec![[0.0f32; 3]; L * H];
+        let (lx, hx) = (partie.gb.largeur(), partie.gb.hauteur());
+        let (lw, hw) = (lx / 4, hx / 4);
+        let rgb = partie.gb.ecran_rgb(&self.config.palette.teintes());
+        let mut acc = vec![[0.0f32; 3]; lw * hw];
         for (i, c) in rgb.as_chunks::<3>().0.iter().enumerate() {
-            let (x, y) = (i % gb_core::LARGEUR, i / gb_core::LARGEUR);
-            let Some(a) = acc.get_mut((y / 4) * L + x / 4) else {
+            let (x, y) = (i % lx, i / lx);
+            let Some(a) = acc.get_mut((y / 4) * lw + x / 4) else {
                 continue;
             };
             for k in 0..3 {
@@ -583,8 +583,8 @@ impl App {
         }
         for _ in 0..2 {
             let src = acc.clone();
-            for y in 0..H {
-                for x in 0..L {
+            for y in 0..hw {
+                for x in 0..lw {
                     let mut s = [0.0f32; 3];
                     for (dx, dy) in [
                         (-1, -1),
@@ -597,13 +597,13 @@ impl App {
                         (0, 1),
                         (1, 1),
                     ] {
-                        let xx = (x as i32 + dx).clamp(0, L as i32 - 1) as usize;
-                        let yy = (y as i32 + dy).clamp(0, H as i32 - 1) as usize;
+                        let xx = (x as i32 + dx).clamp(0, lw as i32 - 1) as usize;
+                        let yy = (y as i32 + dy).clamp(0, hw as i32 - 1) as usize;
                         for k in 0..3 {
-                            s[k] += src[yy * L + xx][k] / 9.0;
+                            s[k] += src[yy * lw + xx][k] / 9.0;
                         }
                     }
-                    acc[y * L + x] = s;
+                    acc[y * lw + x] = s;
                 }
             }
         }
@@ -616,7 +616,7 @@ impl App {
                 Color32::from_rgb(m(c[0]), m(c[1]), m(c[2]))
             })
             .collect();
-        let img = ColorImage::new([L, H], px);
+        let img = ColorImage::new([lw, hw], px);
         match &mut self.hab.flou {
             Some(t) => t.set(img, TextureOptions::LINEAR),
             None => {
@@ -648,7 +648,10 @@ impl App {
         let mut p = base.clone();
         p.multiply_opacity(t);
         if let Some(tex) = &self.hab.flou {
-            let ratio = gb_core::LARGEUR as f32 / gb_core::HAUTEUR as f32;
+            let ratio = self
+                .partie
+                .as_ref()
+                .map_or(1.0, |p| p.gb.largeur() as f32 / p.gb.hauteur() as f32);
             let taille = if ecran.width() / ecran.height() > ratio {
                 Vec2::new(ecran.width(), ecran.width() / ratio)
             } else {
@@ -859,12 +862,15 @@ impl App {
         );
         if zone.width() > 240.0 {
             if let Some(tex) = &self.tex_ecran {
-                let ratio = gb_core::LARGEUR as f32 / gb_core::HAUTEUR as f32;
+                let ratio = self
+                    .partie
+                    .as_ref()
+                    .map_or(1.0, |p| p.gb.largeur() as f32 / p.gb.hauteur() as f32);
                 let l = (zone.width() - 20.0)
                     .min((zone.height() - 20.0) * ratio)
                     .min(520.0);
                 let r = Rect::from_center_size(zone.center(), Vec2::new(l, l / ratio));
-                let clair = if self.partie.as_ref().is_some_and(|p| p.gb.is_cgb()) {
+                let clair = if self.partie.as_ref().is_some_and(|p| p.gb.couleur()) {
                     [255; 3]
                 } else {
                     self.config.palette.teintes()[0]

@@ -63,10 +63,10 @@ pub(super) struct EcranTouches {
     defil: f32,
     retour: Option<GenreMenu>,
     /// Boutons allumés en démonstration (captures).
-    demo_allumes: u8,
+    demo_allumes: u16,
 }
 
-fn bits_console(gb: u8) -> u8 {
+fn bits_console(gb: u16) -> u16 {
     Bouton::TOUS
         .iter()
         .filter(|b| gb & b.bit() != 0)
@@ -90,8 +90,8 @@ impl App {
         self.ecran_touches.is_none() && self.touches.tenue(a, &self.clavier, self.pads())
     }
 
-    /// Boutons Game Boy tenus (bits `gb_core::bouton`).
-    pub(super) fn boutons_jeu(&self, maintenant: f64) -> u8 {
+    /// Boutons tenus (bits `gb_core::bouton`, plus `touches::BIT_L` / `BIT_R`).
+    pub(super) fn boutons_jeu(&self, maintenant: f64) -> u16 {
         self.touches.boutons(&self.clavier, self.pads(), maintenant)
     }
 
@@ -163,7 +163,7 @@ impl App {
             }
             "-allume" => {
                 e.demo_allumes = bits_console(
-                    gb_core::bouton::A | gb_core::bouton::GAUCHE | gb_core::bouton::START,
+                    Bouton::A.bit() | Bouton::Gauche.bit() | Bouton::Start.bit() | Bouton::L.bit(),
                 );
             }
             "-conflit" => {

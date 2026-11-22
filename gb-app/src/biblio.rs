@@ -39,10 +39,6 @@ impl Plateforme {
             Plateforme::Gba => "Game Boy Advance",
         }
     }
-
-    pub fn jouable(self) -> bool {
-        self != Plateforme::Gba
-    }
 }
 
 /// Une ROM trouvée : fichier en vrac ou entrée d'archive.
@@ -125,7 +121,7 @@ fn ext_rom(nom: &str) -> Option<&'static str> {
 }
 
 /// Plateforme d'après l'extension et l'en-tête (un .gb « CGB seulement » est classé GBC).
-fn plateforme(ext: &str, entete: &[u8]) -> Plateforme {
+pub fn plateforme(ext: &str, entete: &[u8]) -> Plateforme {
     match ext {
         "gba" => Plateforme::Gba,
         "gbc" => Plateforme::Gbc,
@@ -434,8 +430,6 @@ mod tests {
         // En-tête tronqué : pas de panique.
         assert_eq!(titre_entete(Plateforme::Gb, &d[..0x20]), "");
         assert_eq!(plateforme("gba", &[]), Plateforme::Gba);
-        assert!(Plateforme::Gb.jouable() && Plateforme::Gbc.jouable());
-        assert!(!Plateforme::Gba.jouable());
     }
 
     #[test]

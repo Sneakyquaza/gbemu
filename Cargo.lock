@@ -839,6 +839,7 @@ dependencies = [
  "crc32fast",
  "eframe",
  "gb-core",
+ "gba-core",
  "gilrs",
  "png 0.17.16",
  "rfd",

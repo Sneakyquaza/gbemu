@@ -276,11 +276,8 @@ impl App {
     }
 
     fn lancer_avec_son(&mut self) {
-        let jouable = self
-            .vue
-            .get(self.sel)
-            .is_some_and(|&fi| self.roms[self.fiches[fi].rom].plateforme.jouable());
-        self.son(if jouable { Son::Valider } else { Son::Erreur });
+        let choisi = self.vue.get(self.sel).is_some();
+        self.son(if choisi { Son::Valider } else { Son::Erreur });
         self.lancer_selection();
     }
 
@@ -889,22 +886,6 @@ fn carte(
             );
         }
         None => cartouche(p, zone, pl, &f.titre),
-    }
-    if !pl.jouable() {
-        // Plateformes pas encore émulées : visibles mais signalées.
-        let g = ligne(p, "Bientôt", moyen(11.5), jt.doux);
-        let gs = g.size();
-        // En bas à gauche : ne masque ni l'étiquette ni le titre d'une jaquette.
-        let b = Rect::from_min_size(
-            Pos2::new(zone.left() + 10.0, zone.bottom() - 32.0),
-            Vec2::new(gs.x + 16.0, 22.0),
-        );
-        p.rect_filled(b, CornerRadius::same(11), jt.fond);
-        p.galley(
-            Pos2::new(b.left() + 8.0, b.center().y - gs.y * 0.5),
-            g,
-            jt.doux,
-        );
     }
     if ts > 0.0 {
         p.rect_stroke(

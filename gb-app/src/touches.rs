@@ -24,10 +24,17 @@ pub enum Bouton {
     B,
     Select,
     Start,
+    /// Gâchettes de la Game Boy Advance (sans effet sur Game Boy).
+    L,
+    R,
 }
 
+/// Bits des gâchettes au-dessus des 8 bits de `gb_core::bouton`.
+pub const BIT_L: u16 = 0x100;
+pub const BIT_R: u16 = 0x200;
+
 impl Bouton {
-    pub const TOUS: [Bouton; 8] = [
+    pub const TOUS: [Bouton; 10] = [
         Bouton::Haut,
         Bouton::Bas,
         Bouton::Gauche,
@@ -36,6 +43,8 @@ impl Bouton {
         Bouton::B,
         Bouton::Select,
         Bouton::Start,
+        Bouton::L,
+        Bouton::R,
     ];
 
     pub fn nom(self) -> &'static str {
@@ -48,13 +57,15 @@ impl Bouton {
             Bouton::B => "B",
             Bouton::Select => "Select",
             Bouton::Start => "Start",
+            Bouton::L => "L",
+            Bouton::R => "R",
         }
     }
 
-    /// Bit du registre joypad de `gb_core`.
-    pub fn bit(self) -> u8 {
+    /// Bit du registre joypad de `gb_core` (L et R : [`BIT_L`], [`BIT_R`]).
+    pub fn bit(self) -> u16 {
         use gb_core::bouton as g;
-        match self {
+        (match self {
             Bouton::Haut => g::HAUT,
             Bouton::Bas => g::BAS,
             Bouton::Gauche => g::GAUCHE,
@@ -63,7 +74,9 @@ impl Bouton {
             Bouton::B => g::B,
             Bouton::Select => g::SELECT,
             Bouton::Start => g::START,
-        }
+            Bouton::L => return BIT_L,
+            Bouton::R => return BIT_R,
+        }) as u16
     }
 }
 
@@ -352,7 +365,7 @@ impl Cible {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Profil {
-    pub boutons: [Vec<Entree>; 8],
+    pub boutons: [Vec<Entree>; 10],
     /// Une ligne par action de [`Action::toutes`], dans le même ordre.
     pub raccourcis: Vec<(Action, Vec<Entree>)>,
 }
@@ -378,6 +391,8 @@ impl Profil {
             vec![t(Key::Z), t(Key::W), t(Key::J)],
             vec![t(Key::Backspace), t(Key::Space)],
             vec![t(Key::Enter)],
+            vec![t(Key::A)],
+            vec![t(Key::S)],
         ];
         let f = [
             Key::F1,
@@ -443,12 +458,15 @@ impl Profil {
             vec![m(Button::South), m(Button::West)],
             vec![m(Button::Select)],
             vec![m(Button::Start)],
+            vec![m(Button::LeftTrigger)],
+            vec![m(Button::RightTrigger)],
         ];
         for (a, e) in p.raccourcis.iter_mut() {
             *e = match a {
                 Action::Pause => vec![accord(Button::Start, Button::Select)],
-                Action::AvanceRapide => vec![m(Button::RightTrigger), m(Button::RightTrigger2)],
-                Action::Rembobiner => vec![m(Button::LeftTrigger), m(Button::LeftTrigger2)],
+                // L1/R1 sont les gâchettes L/R de la GBA : avance et rembobinage sur L2/R2.
+                Action::AvanceRapide => vec![m(Button::RightTrigger2)],
+                Action::Rembobiner => vec![m(Button::LeftTrigger2)],
                 // Accords optionnels du cahier (Select+R1 sauver, Select+L1 charger).
                 Action::SauverEtat => vec![accord(Button::RightTrigger, Button::Select)],
                 Action::ChargerEtat => vec![accord(Button::LeftTrigger, Button::Select)],
@@ -516,8 +534,8 @@ impl Profil {
     }
 
     /// Bits `gb_core` des boutons tenus (directions opposées annulées, turbo compris).
-    pub fn boutons_tenus(&self, c: &Clavier, pad: Option<&Pad>, maintenant: f64) -> u8 {
-        let mut v = 0u8;
+    pub fn boutons_tenus(&self, c: &Clavier, pad: Option<&Pad>, maintenant: f64) -> u16 {
+        let mut v = 0u16;
         for b in Bouton::TOUS {
             if self.boutons[b as usize].iter().any(|e| tenue(e, c, pad)) {
                 v |= b.bit();
@@ -797,17 +815,18 @@ impl Touches {
     }
 
     /// Boutons Game Boy tenus (clavier + toutes les manettes).
-    pub fn boutons(&self, c: &Clavier, pads: &[Pad], maintenant: f64) -> u8 {
+    pub fn boutons(&self, c: &Clavier, pads: &[Pad], maintenant: f64) -> u16 {
         let mut v = self
             .sources(pads)
             .fold(0, |v, (p, pad)| v | p.boutons_tenus(c, pad, maintenant));
-        use gb_core::bouton as g;
+        let [gauche, droite, haut, bas] =
+            [Bouton::Gauche, Bouton::Droite, Bouton::Haut, Bouton::Bas].map(Bouton::bit);
         // Directions opposées impossibles sur une vraie croix.
-        if v & (g::GAUCHE | g::DROITE) == g::GAUCHE | g::DROITE {
-            v &= !(g::GAUCHE | g::DROITE);
+        if v & (gauche | droite) == gauche | droite {
+            v &= !(gauche | droite);
         }
-        if v & (g::HAUT | g::BAS) == g::HAUT | g::BAS {
-            v &= !(g::HAUT | g::BAS);
+        if v & (haut | bas) == haut | bas {
+            v &= !(haut | bas);
         }
         v
     }
@@ -824,7 +843,16 @@ impl Touches {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gb_core::bouton as g;
+
+    /// Bits de `gb_core::bouton` élargis aux 16 bits de l'appli.
+    mod g {
+        use gb_core::bouton as b;
+        pub const HAUT: u16 = b::HAUT as u16;
+        pub const A: u16 = b::A as u16;
+        pub const B: u16 = b::B as u16;
+        pub const START: u16 = b::START as u16;
+        pub const SELECT: u16 = b::SELECT as u16;
+    }
 
     fn clavier(tenues: &[Key]) -> Clavier {
         Clavier {
@@ -877,6 +905,7 @@ mod tests {
         assert_eq!(b(&[Key::Enter]), g::START);
         assert_eq!(b(&[Key::Backspace]), g::SELECT);
         assert_eq!(b(&[Key::Space]), g::SELECT);
+        assert_eq!(b(&[Key::A, Key::S]), BIT_L | BIT_R);
         // Directions opposées annulées.
         assert_eq!(b(&[Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp]), g::HAUT);
         assert!(t.tenue(Action::AvanceRapide, &clavier(&[Key::Tab]), &[]));
@@ -930,6 +959,8 @@ mod tests {
         assert!(t.appuyee(Action::ChargerEtat, &c, &[charger]));
         let r2 = pad(&[Button::RightTrigger2], &[]);
         assert!(t.tenue(Action::AvanceRapide, &c, &[r2]));
+        let gachettes = pad(&[Button::LeftTrigger, Button::RightTrigger], &[]);
+        assert_eq!(t.boutons(&c, &[gachettes], 0.5), BIT_L | BIT_R);
     }
 
     #[test]

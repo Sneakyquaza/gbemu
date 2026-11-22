@@ -270,10 +270,10 @@ impl App {
     /// Juste après le lancement d'une partie : palette du jeu, miniature de reprise.
     pub(super) fn debut_jeu(&mut self) {
         let force = self.hud.barre_forcee;
-        let cgb = self.partie.as_ref().is_some_and(|p| p.gb.is_cgb());
+        let cgb = self.partie.as_ref().is_some_and(|p| p.gb.couleur());
         self.hud = Hud {
             barre_forcee: force,
-            // GBC : palette DMG sans objet, rien de mémorisé pour ce jeu.
+            // GBC, GBA : palette DMG sans objet, rien de mémorisé pour ce jeu.
             palette_globale: (!cgb).then_some(self.config.palette),
             ..Hud::default()
         };
@@ -433,8 +433,8 @@ impl App {
     fn capture_ecran(&mut self) {
         let Some(p) = &self.partie else { return };
         const F: usize = 4;
-        let (l, h) = (gb_core::LARGEUR, gb_core::HAUTEUR);
-        let ecran = etats::ecran_rgb(&p.gb, &self.config.palette.teintes());
+        let (l, h) = (p.gb.largeur(), p.gb.hauteur());
+        let ecran = p.gb.ecran_rgb(&self.config.palette.teintes());
         let mut rgb = Vec::with_capacity(l * h * F * F * 3);
         for y in 0..h * F {
             for x in 0..l * F {
@@ -494,9 +494,10 @@ impl App {
 
         let retro = self.config.retroeclaire;
         let teintes = self.config.palette.teintes();
-        let mut rgb = etats::ecran_rgb(&partie.gb, &teintes);
-        // Teinte claire de référence (lueur, grille) : blanc en GBC.
-        let mut c0 = if partie.gb.is_cgb() {
+        let mut rgb = partie.gb.ecran_rgb(&teintes);
+        let (lx, hx) = (partie.gb.largeur(), partie.gb.hauteur());
+        // Teinte claire de référence (lueur, grille) : blanc en GBC et GBA.
+        let mut c0 = if partie.gb.couleur() {
             [255; 3]
         } else {
             teintes[0]
@@ -540,7 +541,7 @@ impl App {
                 .collect()
         };
         self.hud.vues = images;
-        let img = ColorImage::new([gb_core::LARGEUR, gb_core::HAUTEUR], px);
+        let img = ColorImage::new([lx, hx], px);
         match &mut self.tex_ecran {
             Some(t) => t.set(img, TextureOptions::NEAREST),
             None => {
@@ -548,14 +549,11 @@ impl App {
             }
         }
 
-        // Échelle entière en pixels physiques : chaque pixel Game Boy reste net.
+        // Échelle entière en pixels physiques : chaque pixel de la console reste net.
         let ppp = ui.ctx().pixels_per_point();
         let dispo = ecran.size() * ppp;
-        let echelle = ((dispo.x / gb_core::LARGEUR as f32)
-            .min(dispo.y / gb_core::HAUTEUR as f32)
-            .floor())
-        .max(1.0);
-        let taille = Vec2::new(gb_core::LARGEUR as f32, gb_core::HAUTEUR as f32) * echelle / ppp;
+        let echelle = ((dispo.x / lx as f32).min(dispo.y / hx as f32).floor()).max(1.0);
+        let taille = Vec2::new(lx as f32, hx as f32) * echelle / ppp;
         let coin = ((ecran.center() - taille * 0.5) * ppp).round() / ppp;
         let r = Rect::from_min_size(coin, taille);
         // Lueur douce de la teinte claire autour de l'écran (plus forte en rétroéclairé).
@@ -592,11 +590,11 @@ impl App {
                 (echelle / 6.0).floor().max(1.0) / ppp,
                 Color32::from_rgba_unmultiplied(c[0] / 2, c[1] / 2, c[2] / 2, 46),
             );
-            for i in 1..gb_core::LARGEUR {
+            for i in 1..lx {
                 let x = r.left() + i as f32 * pas;
                 p.line_segment([Pos2::new(x, r.top()), Pos2::new(x, r.bottom())], trait_lcd);
             }
-            for j in 1..gb_core::HAUTEUR {
+            for j in 1..hx {
                 let y = r.top() + j as f32 * pas;
                 p.line_segment([Pos2::new(r.left(), y), Pos2::new(r.right(), y)], trait_lcd);
             }
@@ -941,20 +939,24 @@ impl App {
     fn dessiner_filtres(&mut self, ui: &egui::Ui, p: &Painter, bouton: Rect, bas: f32) {
         let t = j();
         let cgb = self.partie.as_ref().is_some_and(|p| p.gb.is_cgb());
-        // GBC : la palette DMG est remplacée par la correction des couleurs.
-        let lignes = [
+        let gba = self.partie.as_ref().is_some_and(|p| p.gb.is_gba());
+        // GBC : la palette DMG est remplacée par la correction des couleurs ; GBA : ni l'une
+        // ni l'autre (raccourci : pas de correction des couleurs GBA, à ajouter dans gba-core).
+        let mut lignes = vec![
             ("Grille LCD", Some(self.config.grille)),
             ("Rémanence", Some(self.config.remanence)),
             ("Rétroéclairé", Some(self.config.retroeclaire)),
-            if cgb {
+        ];
+        if !gba {
+            lignes.push(if cgb {
                 (
                     "Correction des couleurs",
                     Some(!self.config.sans_correction),
                 )
             } else {
                 ("Palette", None)
-            },
-        ];
+            });
+        }
         let (l, h_l) = (250.0, 40.0);
         let h = lignes.len() as f32 * h_l + 16.0;
         let r = Rect::from_min_size(
@@ -1080,7 +1082,7 @@ impl App {
         let ecart = 14.0;
         let dispo = (ecran.width() - 48.0 - 56.0).min(5.0 * 168.0 + 4.0 * ecart);
         let lt = ((dispo - 4.0 * ecart) / COLONNES_ETATS as f32).max(80.0);
-        let hm = lt * 144.0 / 160.0;
+        let hm = lt * partie.gb.hauteur() as f32 / partie.gb.largeur() as f32;
         let ht = hm + 46.0;
         let lc = lt * COLONNES_ETATS as f32 + 4.0 * ecart + 56.0;
         let hc = 88.0 + 2.0 * ht + ecart + 78.0;

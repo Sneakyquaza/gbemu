@@ -4,9 +4,10 @@
 use crate::audio::Sortie;
 use crate::biblio::Rom;
 use crate::etats::{self, Cible, ErreurEmplacement, Etats};
+use crate::machine::Machine;
 use crate::rembobinage::{self, Rembobinage};
 use crate::sauve;
-use gb_core::{ErreurEtat, GameBoy};
+use gb_core::ErreurEtat;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -57,7 +58,7 @@ impl Vitesse {
 }
 
 pub struct Partie {
-    pub gb: GameBoy,
+    pub gb: Machine,
     pub titre: String,
     pub crc: u32,
     chemin_sav: PathBuf,
@@ -102,7 +103,7 @@ impl Partie {
     ) -> Result<Partie, String> {
         let octets =
             crate::biblio::lire_rom(&rom).map_err(|e| format!("Lecture impossible : {e}"))?;
-        let mut gb = GameBoy::new(&octets).map_err(|e| format!("ROM refusée : {e:?}"))?;
+        let mut gb = Machine::new(&octets, rom.plateforme == crate::biblio::Plateforme::Gba)?;
         gb.set_sample_rate(crate::audio::FREQUENCE);
         let derniere_sav = sauve::lire(&chemin_sav);
         if let Some(s) = &derniere_sav {
@@ -240,9 +241,15 @@ impl Partie {
 
     // ----- États -----
 
+    /// Miniature PNG de l'écran courant.
+    fn mini(&self) -> Vec<u8> {
+        let rgb = self.gb.ecran_rgb(&self.teintes);
+        etats::miniature(&rgb, self.gb.largeur(), self.gb.hauteur())
+    }
+
     /// Sauvegarde l'état dans l'emplacement `n` (1 à 10) ; message d'erreur sinon.
     pub fn sauver_etat(&mut self, n: usize) -> Result<(), String> {
-        let mini = etats::miniature(&etats::ecran_rgb(&self.gb, &self.teintes));
+        let mini = self.mini();
         match self
             .etats
             .ecrire(Cible::Num(n), &self.gb.save_state(), &mini, false)
@@ -267,7 +274,7 @@ impl Partie {
         };
         let avant = self.gb.save_state();
         self.gb.load_state(&donnees).map_err(message)?;
-        let mini = etats::miniature(&etats::ecran_rgb(&self.gb, &self.teintes));
+        let mini = self.mini();
         // Après le chargement : si l'écriture échoue, l'état d'avant n'est perdu que du disque.
         let _ = self.etats.ecrire(Cible::Annule, &avant, &mini, true);
         self.reprendre();
@@ -325,7 +332,7 @@ impl Partie {
         );
         // Carte de reprise sans réponse : l'ancien état auto est gardé tel quel.
         if self.reprise.is_none() && self.images > 0 {
-            let mini = etats::miniature(&etats::ecran_rgb(&self.gb, &self.teintes));
+            let mini = self.mini();
             let _ = self
                 .etats
                 .ecrire(Cible::Auto, &self.gb.save_state(), &mini, true);

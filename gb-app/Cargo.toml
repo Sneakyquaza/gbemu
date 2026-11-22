@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 gb-core = { path = "../gb-core" }
+gba-core = { path = "../gba-core" }
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
 cpal = "0.18"
 gilrs = "0.11"

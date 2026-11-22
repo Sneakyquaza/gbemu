@@ -285,24 +285,21 @@ impl App {
         app.jaquettes = Some(Jaquettes::lancer(app.chemins.jaquettes(), reveil(&ctx)));
 
         if let Some(chemin) = app.opts.rom.clone() {
+            let donnees = std::fs::read(&chemin).unwrap_or_default();
+            let ext = chemin
+                .extension()
+                .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
             let rom = Rom {
                 interne: None,
                 taille: 0,
-                crc: std::fs::read(&chemin).map_or(0, |d| crc32fast::hash(&d)),
-                plateforme: Plateforme::Gb,
+                crc: crc32fast::hash(&donnees),
+                plateforme: biblio::plateforme(&ext, &donnees),
                 titre_entete: String::new(),
                 fichier: chemin,
             };
             let titre = rom.nom_fichier();
-            let ext = rom
-                .fichier
-                .extension()
-                .map(|e| e.to_string_lossy().to_ascii_lowercase());
-            if ext.as_deref() == Some("gba") {
-                app.dire("Game Boy Advance : bientôt pris en charge");
-            } else {
-                app.lancer_partie(rom, titre);
-            }
+            app.lancer_partie(rom, titre);
         }
         if app.opts.grille {
             app.config.grille = true;
@@ -497,11 +494,6 @@ impl App {
         };
         let f = &self.fiches[i];
         let rom = self.roms[f.rom].clone();
-        if !rom.plateforme.jouable() {
-            let m = format!("{} : bientôt pris en charge", rom.plateforme.nom());
-            self.dire(m);
-            return;
-        }
         let titre = f.titre.clone();
         self.lancer_partie(rom, titre);
     }

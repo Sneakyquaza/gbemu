@@ -41,7 +41,7 @@ const ECRAN: [Color32; 4] = [
 #[derive(Default, Clone, Copy)]
 pub struct Vue {
     /// Boutons enfoncés (bit `1 << Bouton as usize`).
-    pub allumes: u8,
+    pub allumes: u16,
     /// Bouton en attente d'une touche : halo pulsant.
     pub choisi: Option<Bouton>,
     /// Bouton qui vient de perdre sa touche : clignote orange.
@@ -93,6 +93,9 @@ const BTN_R: f32 = 5.6;
 const PASTILLE_SELECT: (f32, f32) = (35.5, 127.5);
 const PASTILLE_START: (f32, f32) = (49.5, 127.5);
 const ANGLE: f32 = -25.0 * PI / 180.0;
+/// Gâchettes L/R (GBA) : languettes dans les coins du haut, au-dessus de la rainure.
+const GACHETTE_L: (f32, f32, f32, f32) = (4.0, 1.4, 21.0, 5.8);
+const GACHETTE_R: (f32, f32, f32, f32) = (L - 21.0, 1.4, L - 4.0, 5.8);
 
 /// Centre d'un bouton à l'écran (pour poser une bulle à côté).
 pub fn centre(zone: Rect, b: Bouton) -> Pos2 {
@@ -106,12 +109,14 @@ pub fn centre(zone: Rect, b: Bouton) -> Pos2 {
         Bouton::B => BTN_B,
         Bouton::Select => PASTILLE_SELECT,
         Bouton::Start => PASTILLE_START,
+        Bouton::L => (12.5, 3.6),
+        Bouton::R => (L - 12.5, 3.6),
     };
     g.p(x, y)
 }
 
 /// Zones cliquables, dans l'ordre de [`Bouton::TOUS`].
-pub fn zones(zone: Rect) -> [Rect; 8] {
+pub fn zones(zone: Rect) -> [Rect; 10] {
     let g = geo(zone);
     let (cx, cy) = CROIX;
     // Branches seules (le centre de la croix n'est à personne), un peu débordantes au bout.
@@ -134,6 +139,18 @@ pub fn zones(zone: Rect) -> [Rect; 8] {
         rond(BTN_B),
         pastille(PASTILLE_SELECT),
         pastille(PASTILLE_START),
+        g.r(
+            GACHETTE_L.0,
+            GACHETTE_L.1 - 0.6,
+            GACHETTE_L.2,
+            GACHETTE_L.3 + 0.6,
+        ),
+        g.r(
+            GACHETTE_R.0,
+            GACHETTE_R.1 - 0.6,
+            GACHETTE_R.2,
+            GACHETTE_R.3 + 0.6,
+        ),
     ]
 }
 
@@ -265,7 +282,7 @@ fn texte(p: &Painter, pos: Pos2, s: &str, taille: f32, angle: f32, couleur: Colo
 // ----- Dessin -----
 
 /// Dessine la console dans `zone` ; renvoie les zones cliquables (ordre de [`Bouton::TOUS`]).
-pub fn dessiner(p: &Painter, zone: Rect, v: &Vue) -> [Rect; 8] {
+pub fn dessiner(p: &Painter, zone: Rect, v: &Vue) -> [Rect; 10] {
     let g = geo(zone);
     let s = g.s;
     let allume = |b: Bouton| v.allumes & (1 << b as usize) != 0;
@@ -290,6 +307,51 @@ pub fn dessiner(p: &Painter, zone: Rect, v: &Vue) -> [Rect; 8] {
         interieur,
         PathStroke::new(0.5 * s, voile(Color32::WHITE, 0.18)),
     ));
+
+    // Gâchettes L et R : languettes sombres, baie et lueur à l'appui, halo si choisies.
+    for (b, (x0, y0, x1, y1), nom) in [(Bouton::L, GACHETTE_L, "L"), (Bouton::R, GACHETTE_R, "R")] {
+        let enfonce = allume(b);
+        let r = g.r(x0, y0, x1, y1);
+        let rr = [1.6 * s; 4];
+        if v.choisi == Some(b) || clignote(b) {
+            let coul = if clignote(b) { ORANGE } else { HALO };
+            for i in 0..6 {
+                let f = i as f32 / 6.0;
+                p.add(PathShape::closed_line(
+                    arrondi(r.expand((0.4 + f * 1.8) * s), rr.map(|x| x + f * 1.8 * s)),
+                    PathStroke::new(0.5 * s, voile(coul, (0.35 + 0.55 * pulse) * (1.0 - f))),
+                ));
+            }
+        }
+        let r2 = r.translate(vec2(0.0, if enfonce { 0.35 } else { 0.0 } * s));
+        if !enfonce {
+            ombre(p, r, rr, vec2(0.0, 0.7 * s), 0.9 * s, 0.45);
+        }
+        let (h, bas) = if enfonce {
+            (BAIE_HAUT, BAIE_BAS)
+        } else {
+            (CROIX_HAUT, CROIX_BAS)
+        };
+        degrade(p, &arrondi(r2, rr), h, bas, sens);
+        if enfonce {
+            lueur(p, r2.center(), 2.0 * s, 3.0 * s, BAIE_ALLUMEE, 0.35);
+        }
+        p.line_segment(
+            [
+                r2.left_top() + vec2(1.6, 0.5) * s,
+                r2.right_top() + vec2(-1.6, 0.5) * s,
+            ],
+            Stroke::new(0.35 * s, voile(Color32::WHITE, 0.2)),
+        );
+        texte(
+            p,
+            r2.center(),
+            nom,
+            3.0 * s,
+            0.0,
+            voile(Color32::WHITE, 0.75),
+        );
+    }
 
     // Rainure du haut.
     for (dy, c) in [
