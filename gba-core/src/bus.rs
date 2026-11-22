@@ -4,6 +4,7 @@
 //! Modèle de temps : chaque accès ajoute son coût à `cycles` (16,78 MHz) ; quand `cycles` atteint
 //! `prochain`, `evenements` fait avancer PPU et timers (et lance les DMA qu'ils déclenchent).
 
+use crate::apu::Apu;
 use crate::cartouche::Cartouche;
 use crate::dma::{self, Dma};
 use crate::ppu::Ppu;
@@ -29,6 +30,7 @@ pub struct Bus {
     pub ppu: Ppu,
     pub cart: Cartouche,
     timers: Timers,
+    pub(crate) apu: Apu,
     pub(crate) dma: [Dma; 4],
     /// Dernières valeurs écrites dans les E/S (registres sans logique propre et base des écritures 8 bits).
     io: Box<[u8]>,
@@ -97,6 +99,7 @@ impl Bus {
             ppu: Ppu::new(),
             cart,
             timers: Timers::new(),
+            apu: Apu::new(),
             dma: [Dma::default(); 4],
             io: vec![0; 0x400].into_boxed_slice(),
             ie: 0,
@@ -123,8 +126,7 @@ impl Bus {
     pub fn apres_bios(&mut self) {
         self.postflg = 1;
         // SOUNDBIAS
-        self.io[0x88] = 0x00;
-        self.io[0x89] = 0x02;
+        self.apu.ecrit8(0x89, 0x02);
     }
 
     fn maj_attentes(&mut self) {
@@ -383,6 +385,7 @@ impl Bus {
         let o = a & 0x3FE;
         match o {
             0x000..=0x05E => self.ppu.lit_io(o),
+            0x060..=0x0AE => self.apu.lit8(o) as u16 | (self.apu.lit8(o + 1) as u16) << 8,
             // DMA : seuls les CNT_H se relisent.
             0x0BA | 0x0C6 | 0x0D2 | 0x0DE => self.dma_lit_ctl(o),
             0x0B0..=0x0DE => 0,
@@ -394,8 +397,7 @@ impl Bus {
             0x204 => self.waitcnt,
             0x208 => self.ime as u16,
             0x300 => self.postflg as u16,
-            // raccourci : son (0x060-0x0AE), série et le reste relisent la dernière écriture
-            // (le lot APU remplacera la plage du son).
+            // raccourci : série et le reste relisent la dernière écriture.
             _ => le16(&self.io, o as usize),
         }
     }
@@ -423,6 +425,11 @@ impl Bus {
         ecrit_le16(&mut self.io, o as usize, v);
         match o {
             0x000..=0x05E => self.ppu.ecrit_io(o, v),
+            // Octet par octet : un déclenchement (NRx4) ne doit pas suivre l'écriture de NRx3.
+            0x060..=0x0AE => {
+                self.son_ecrit8(o, v as u8);
+                self.son_ecrit8(o + 1, (v >> 8) as u8);
+            }
             0x0B0..=0x0DE => self.dma_ecrit(o, v),
             0x100..=0x10E => {
                 let irq = self.timers.ecrit(o, v, self.cycles);
@@ -456,6 +463,7 @@ impl Bus {
                 self.postflg = v & 1;
                 self.io[0x300] = v;
             }
+            0x060..=0x0AF => self.son_ecrit8(o, v),
             // HALTCNT : arrêt jusqu'à une interruption (raccourci : STOP traité comme HALT).
             0x301 => self.halt = true,
             _ => {
@@ -529,10 +537,9 @@ impl Bus {
                 }
             }
             if self.cycles >= self.timers.prochain {
-                // Lot APU : `_debs` = débordements des timers 0/1, qui alimenteront les FIFO
-                // (et `dma_fifo`).
-                let (irq, _debs) = self.timers.avance(self.cycles);
+                let (irq, debs) = self.timers.avance(self.cycles);
                 self.if_ |= irq;
+                self.son_debordements(debs);
             }
             self.calcule_prochain();
         }

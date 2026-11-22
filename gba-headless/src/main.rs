@@ -1,5 +1,6 @@
 //! Exécuteur GBA sans écran : charge une ROM, exécute N images, écrit l'écran en PNG, mesure.
 
+use gb_headless::write_wav;
 use gba_core::Gba;
 use gba_headless::{touche_nommee, write_png_rgb};
 use std::path::PathBuf;
@@ -7,9 +8,12 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 const AIDE: &str = "usage : gba-headless <rom> [--frames N] [--png sortie.png] [--bench] \
-[--bios bios.bin] [--appui TOUCHE@IMAGE]… [--regs]
+[--bios bios.bin] [--appui TOUCHE@IMAGE]… [--regs] [--wav sortie.wav]
   --appui : touche (A, B, SELECT, START, DROITE, GAUCHE, HAUT, BAS, R, L) tenue 6 images
   --regs  : affiche r0-r15 et CPSR à la fin";
+
+/// Fréquence du WAV écrit par `--wav`.
+const FREQ_WAV: u32 = 48_000;
 
 /// Durée d'un appui `--appui`, en images.
 const DUREE_APPUI: u32 = 6;
@@ -19,6 +23,7 @@ fn main() -> ExitCode {
     let mut rom = None;
     let mut frames = 600u32;
     let mut png_out: Option<PathBuf> = None;
+    let mut wav_out: Option<PathBuf> = None;
     let mut bios: Option<PathBuf> = None;
     let mut bench = false;
     let mut regs = false;
@@ -30,6 +35,7 @@ fn main() -> ExitCode {
                 None => return erreur("--frames attend un nombre"),
             },
             "--png" => png_out = args.next().map(PathBuf::from),
+            "--wav" => wav_out = args.next().map(PathBuf::from),
             "--bios" => bios = args.next().map(PathBuf::from),
             "--bench" => bench = true,
             "--regs" => regs = true,
@@ -70,6 +76,8 @@ fn main() -> ExitCode {
         Err(e) => return erreur(&format!("{} : {e}", rom.display())),
     };
 
+    gba.set_sample_rate(FREQ_WAV);
+    let mut son = Vec::new();
     let t0 = Instant::now();
     for i in 0..frames {
         let t = appuis
@@ -78,6 +86,9 @@ fn main() -> ExitCode {
             .fold(0, |acc, &(t, _)| acc | t);
         gba.set_keys(t);
         gba.run_frame();
+        if wav_out.is_some() {
+            gba.drain_samples(&mut son);
+        }
     }
     let dt = t0.elapsed().as_secs_f64();
 
@@ -93,6 +104,11 @@ fn main() -> ExitCode {
             print!("r{i}={v:08X} ");
         }
         println!("cpsr={:08X} boucle={}", gba.cpsr(), gba.en_boucle_infinie());
+    }
+    if let Some(p) = wav_out {
+        if let Err(e) = write_wav(&p, &son, FREQ_WAV) {
+            return erreur(&e);
+        }
     }
     if let Some(p) = png_out {
         if let Err(e) = write_png_rgb(&p, gba.frame()) {

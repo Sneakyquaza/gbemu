@@ -37,12 +37,25 @@ LDM/STM) et les 3 pages Thumb (ALU, LDR/STR, LDM/STM) : tout « OK », aucun « 
 - `tests/robustesse.rs` : ROM vide / trop grande / BIOS de mauvaise taille refusés ; ROM aléatoires
   (1 octet à 256 Kio) et écritures aléatoires dans toutes les E/S : aucune panique.
 
+## Son (`gba-core/src/apu.rs`)
+Aucune ROM de test son GBA publique trouvée. Vérifié par :
+- tests unitaires (`apu.rs`) : FIFO pleine / demande de DMA à 16 octets / remise à zéro, volume
+  50/100 % et panoramique du son direct, biais 0 qui coupe la moitié négative, carré du canal 1
+  (fréquence 512 Hz, relecture des registres en écriture seule), RAM d'onde en 2 banques ;
+  bout en bout sur le bus : timer 0 à 32 768 Hz + DMA1 spécial répété → créneau de 2 048 Hz en sortie.
+- tonc `snd1_demo` (`gba-headless --wav`) : notes PSG audibles (D 293 Hz, F 352 Hz, D 587 Hz).
+- Les canaux Game Boy sont ceux de gb-core (blargg dmg_sound/cgb_sound toujours verts).
+
 ## Performances (release, i7-7700, `gba-headless --bench`, 3 000 images)
 FuzzARM ~2 150 i/s, armwrestler (menu) ~1 570 i/s, ppu/stripes ~1 950 i/s, arm.gba ~2 870 i/s
 (objectif > 300 i/s).
+Son (mesures alternées avant/après, 3 000 images) : FuzzARM et armwrestler sans son inchangés
+(±3 %), tonc snd1_demo (2 carrés actifs) ~2 990 → ~2 610 i/s (−13 %).
 
 ## Non émulé / raccourcis (commentaires `raccourci :`)
 PPU : sprites, fenêtres, mélange, mosaïque, modes 1/2/5, affine du fond 2 en bitmap. Prélecture
 cartouche approchée (lecture séquentielle ROM sans attente). Pas de délai de démarrage des timers
 ni des DMA, pas d'interruption d'un DMA par un autre. STOP traité comme HALT. C inchangé après MUL.
-Son (registres relus tels qu'écrits), Flash/EEPROM, série.
+Son : résolution PWM de SOUNDBIAS (bits 14-15) ignorée (sortie plus propre que la console),
+SOUNDCNT_X relu sans rattraper les canaux, rotation des banques d'onde pendant la lecture non
+émulée. Flash/EEPROM, série.

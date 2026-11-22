@@ -95,8 +95,7 @@ impl Bus {
     }
 
     /// Requête FIFO son (canal 1 ou 2, mode spécial) : 4 mots, destination fixe.
-    /// Point d'entrée pour le lot APU (FIFO A/B à moitié vide sur débordement de timer).
-    #[allow(dead_code)]
+    /// Appelée par le son direct (FIFO A/B à moitié vide sur débordement de timer).
     pub(crate) fn dma_fifo(&mut self, n: usize) {
         let d = self.dma[n];
         if !(n == 1 || n == 2) || !d.actif() || d.moment() != SPECIAL {

@@ -7,4 +7,5 @@ license.workspace = true
 
 [dependencies]
 gba-core = { path = "../gba-core" }
+gb-headless = { path = "../gb-headless" }
 png = "0.17"

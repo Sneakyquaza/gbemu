@@ -2,7 +2,8 @@
 //! cartouches MBC0/1/3/5, son.
 //! Aucune E/S : l'appelant fournit la ROM et les sauvegardes en octets et lit l'écran en mémoire.
 
-mod apu;
+/// Moteur des 4 canaux Game Boy, réutilisé par gba-core (`Apu::new_gba`).
+pub mod apu;
 mod bus;
 mod cartridge;
 mod cpu;

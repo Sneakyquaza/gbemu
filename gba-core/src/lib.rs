@@ -1,5 +1,5 @@
 //! Cœur d'émulation Game Boy Advance : CPU ARM7TDMI, bus et carte mémoire, interruptions, timers,
-//! DMA, touches, PPU minimal (modes 3, 4 et 0).
+//! DMA, touches, PPU minimal (modes 3, 4 et 0), son (canaux Game Boy de gb-core + son direct).
 //! Aucune E/S : l'appelant fournit la ROM en octets et lit l'écran en mémoire.
 //!
 //! BIOS : jamais celui de Nintendo. Le BIOS libre Cult-of-GBA (MIT, DenSinH et fleroviux,
@@ -7,6 +7,7 @@
 //! sert les SWI et le vecteur d'IRQ. Démarrage direct par défaut (registres post-BIOS, saut en
 //! 0x08000000).
 
+mod apu;
 mod bus;
 mod cartouche;
 mod cpu;
@@ -87,6 +88,7 @@ impl Gba {
                 bus.evenements();
             }
         }
+        bus.apu.sync(bus.cycles);
     }
 
     /// Écran RGB8 (240×160×3).
@@ -118,6 +120,18 @@ impl Gba {
     /// Lecture mémoire sans effet ni temps (tests, débogage).
     pub fn peek(&self, adr: u32) -> u8 {
         self.bus.lit8_brut(adr)
+    }
+
+    /// Ajoute à `out` les échantillons stéréo entrelacés (G, D) produits depuis le dernier appel
+    /// (passe-haut façon condensateur ; au plus 1 s gardée sans lecture).
+    pub fn drain_samples(&mut self, out: &mut Vec<f32>) {
+        self.bus.apu.sync(self.bus.cycles);
+        self.bus.apu.drain_samples(out);
+    }
+
+    /// Fréquence de sortie du son (Hz, 48 000 par défaut, bornée à 8 000-192 000).
+    pub fn set_sample_rate(&mut self, hz: u32) {
+        self.bus.apu.set_sample_rate(hz);
     }
 
     /// Cycles écoulés depuis le démarrage.

@@ -864,11 +864,15 @@ dependencies = [
 [[package]]
 name = "gba-core"
 version = "0.3.0"
+dependencies = [
+ "gb-core",
+]
 
 [[package]]
 name = "gba-headless"
 version = "0.3.0"
 dependencies = [
+ "gb-headless",
  "gba-core",
  "png 0.17.16",
 ]

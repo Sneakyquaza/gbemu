@@ -248,6 +248,11 @@ struct Onde {
     /// La dernière unité a lu la RAM d'onde (accès CPU possible sur DMG).
     lu: bool,
     long: Longueur,
+    /// GBA (déduits de NR30/NR32, hors état) : banque jouée, 64 échantillons sur les deux
+    /// banques, volume forcé à 75 %.
+    banque: u8,
+    deux_banques: bool,
+    trois_quarts: bool,
 }
 
 impl Onde {
@@ -270,14 +275,14 @@ impl Onde {
         self.freq = l.u16_max(2047, "onde")?;
         // 2047 - freq + 3 au déclenchement.
         self.compte = l.u16_max(2050, "onde")?;
-        self.pos = l.u8_max(31, "onde")?;
+        self.pos = l.u8_max(63, "onde")?;
         self.tampon = l.u8()?;
         self.lu = l.bool()?;
         self.long.charge(l)
     }
 
     fn sortie(&self) -> u8 {
-        if !self.on || self.volume == 0 {
+        if !self.on || (self.volume == 0 && !self.trois_quarts) {
             return 0;
         }
         let s = if self.pos & 1 == 0 {
@@ -285,12 +290,15 @@ impl Onde {
         } else {
             self.tampon & 0x0F
         };
+        if self.trois_quarts {
+            return (s * 3) >> 2;
+        }
         s >> (self.volume - 1)
     }
 
     /// Un cycle machine (2 unités) ; vrai si un échantillon a été lu.
     #[inline]
-    fn tick(&mut self, ram: &[u8; 0x10]) -> bool {
+    fn tick(&mut self, ram: &[u8; 0x20]) -> bool {
         if self.compte >= 2 {
             self.compte -= 2;
             self.lu = false;
@@ -300,8 +308,8 @@ impl Onde {
         for _ in 0..2 {
             if self.compte == 0 {
                 self.compte = 2047 - self.freq;
-                self.pos = (self.pos + 1) & 31;
-                self.tampon = ram[(self.pos >> 1) as usize];
+                self.pos = (self.pos + 1) & if self.deux_banques { 63 } else { 31 };
+                self.tampon = ram[(((self.banque << 5) + self.pos) & 63) as usize >> 1];
                 lu = true;
                 self.lu = true;
             } else {
@@ -386,9 +394,21 @@ impl Bruit {
     }
 }
 
+/// Mixage GBA (registres du son direct tenus par gba-core).
+#[derive(Clone, Copy, Default)]
+struct MixGba {
+    /// Volume PSG de SOUNDCNT_H (0 = 25 %, 1 = 50 %, 2 = 100 %).
+    psg: u8,
+    /// Contribution du son direct A/B, à l'échelle 10 bits de la sortie.
+    ext_g: i32,
+    ext_d: i32,
+    biais: i32,
+}
+
 pub struct Apu {
     regs: [u8; 0x20],
-    wave: [u8; 0x10],
+    /// RAM d'onde ; GBA : 2 banques de 16 octets (la 2e inutilisée sur Game Boy).
+    wave: [u8; 0x20],
     allume: bool,
     /// Prochaine étape du séquenceur (0-7).
     etape: u8,
@@ -419,13 +439,15 @@ pub struct Apu {
     echantillons: Vec<f32>,
     /// Mode CGB : RAM d'onde accessible pendant la lecture, longueurs remises à zéro hors tension.
     cgb: bool,
+    /// Mode GBA (`new_gba`) : registres relus sans masque, RAM d'onde en banques, mixage 10 bits.
+    gba: Option<MixGba>,
 }
 
 impl Apu {
     pub fn new(cgb: bool) -> Self {
         let mut apu = Apu {
             regs: [0; 0x20],
-            wave: [0; 0x10],
+            wave: [0; 0x20],
             allume: true,
             etape: 0,
             c1: Carre::default(),
@@ -449,6 +471,7 @@ impl Apu {
             cond_d: 0.0,
             echantillons: Vec::new(),
             cgb,
+            gba: None,
         };
         apu.set_sample_rate(48_000);
         // État après la boot ROM DMG : canal 1 actif (fin du « ding »), volume retombé à 0.
@@ -471,11 +494,38 @@ impl Apu {
         apu
     }
 
+    /// Canaux Game Boy de la GBA : comportement CGB, registres à zéro, séquenceur libre (pas de
+    /// DIV) ; sortie mixée avec le son direct fourni par `mix_gba`.
+    pub fn new_gba() -> Self {
+        let mut apu = Apu::new(true);
+        apu.eteint();
+        apu.allume = true;
+        apu.gba = Some(MixGba::default());
+        apu.mixe();
+        apu.sale = false;
+        apu.cond_g = apu.niv_g;
+        apu.cond_d = apu.niv_d;
+        apu
+    }
+
+    /// GBA : volume PSG (SOUNDCNT_H bits 0-1), son direct déjà mis à l'échelle 10 bits
+    /// (gauche, droite), biais (SOUNDBIAS). À appeler une fois l'APU rattrapé.
+    pub fn mix_gba(&mut self, psg: u8, ext_g: i32, ext_d: i32, biais: u16) {
+        self.gba = Some(MixGba {
+            psg: psg.min(2),
+            ext_g,
+            ext_d,
+            biais: (biais & 0x3FE) as i32,
+        });
+        self.integre();
+        self.mixe();
+    }
+
     /// Sauvegarde d'état ; la fréquence de sortie (réglage de l'hôte) et les échantillons
     /// en attente n'en font pas partie.
     pub fn sauve(&self, e: &mut Vec<u8>) {
         e.octets(&self.regs);
-        e.octets(&self.wave);
+        e.octets(&self.wave[..self.taille_onde()]);
         e.bool(self.allume);
         e.u8(self.etape);
         self.c1.sauve(e);
@@ -501,9 +551,10 @@ impl Apu {
     }
 
     /// Relit l'état (les échantillons en attente sont gardés).
-    pub fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
+    pub(crate) fn charge(&mut self, l: &mut Lecteur) -> Result<(), ErreurEtat> {
         l.octets(&mut self.regs)?;
-        l.octets(&mut self.wave)?;
+        let n = self.taille_onde();
+        l.octets(&mut self.wave[..n])?;
         self.allume = l.bool()?;
         self.etape = l.u8_max(7, "séquenceur")?;
         self.c1.charge(l)?;
@@ -525,9 +576,30 @@ impl Apu {
         verifie(self.n_niv <= self.n && self.n <= CYCLES_PAR_S, "APU")?;
         verifie(self.phase < CYCLES_PAR_S, "APU")?;
         verifie((1..=2048).contains(&self.avant_div), "APU séquenceur")?;
+        verifie(self.gba.is_some() || self.c3.pos < 32, "onde")?;
+        if self.gba.is_some() {
+            self.regle_onde_gba();
+        }
         // Même invariant que `tick` : attente = cycles restants jusqu'à l'échantillon suivant.
         self.attente = (CYCLES_PAR_S - self.phase).div_ceil(self.frequence);
         Ok(())
+    }
+
+    /// Octets de RAM d'onde sauvegardés (une banque sur Game Boy, deux sur GBA).
+    fn taille_onde(&self) -> usize {
+        if self.gba.is_some() {
+            0x20
+        } else {
+            0x10
+        }
+    }
+
+    /// GBA : banque, dimension et volume 75 % du canal 3 depuis NR30/NR32.
+    fn regle_onde_gba(&mut self) {
+        let (nr30, nr32) = (self.regs[0x0A], self.regs[0x0C]);
+        self.c3.banque = (nr30 >> 6) & 1;
+        self.c3.deux_banques = nr30 & 0x20 != 0;
+        self.c3.trois_quarts = nr32 & 0x80 != 0;
     }
 
     /// Fréquence de sortie (Hz, bornée à 8 000-192 000).
@@ -665,6 +737,27 @@ impl Apu {
             (self.c4.dac, self.c4.sortie()),
         ];
         let nr51 = self.regs[0x15];
+        let nr50 = self.regs[0x14];
+        if let Some(m) = self.gba {
+            // GBA : canaux 0-15 non signés, ×(1-8) (max 480), volume PSG, son direct, biais,
+            // saturation 10 bits, puis biais retiré.
+            let (mut g, mut d) = (0i32, 0i32);
+            for (i, &(_, s)) in canaux.iter().enumerate() {
+                if nr51 & (0x10 << i) != 0 {
+                    g += s as i32;
+                }
+                if nr51 & (1 << i) != 0 {
+                    d += s as i32;
+                }
+            }
+            let sh = 2 - m.psg;
+            g = ((g * (((nr50 >> 4) & 7) + 1) as i32) >> sh) + m.ext_g;
+            d = ((d * ((nr50 & 7) + 1) as i32) >> sh) + m.ext_d;
+            let sortie = |x: i32| ((x + m.biais).clamp(0, 0x3FF) - m.biais) as f32 / 512.0;
+            self.niv_g = sortie(g);
+            self.niv_d = sortie(d);
+            return;
+        }
         let (mut g, mut d) = (0.0, 0.0);
         for (i, &(dac, s)) in canaux.iter().enumerate() {
             if !dac {
@@ -678,7 +771,6 @@ impl Apu {
                 d += a;
             }
         }
-        let nr50 = self.regs[0x14];
         // Volume maître (1-8)/8, puis /4 canaux.
         self.niv_g = g * (((nr50 >> 4) & 7) + 1) as f32 / 32.0;
         self.niv_d = d * ((nr50 & 7) + 1) as f32 / 32.0;
@@ -755,6 +847,9 @@ impl Apu {
     }
 
     pub fn read(&self, addr: u16) -> u8 {
+        if self.gba.is_some() && (0xFF30..=0xFF3F).contains(&addr) {
+            return self.wave[self.index_onde_gba(addr)];
+        }
         match addr {
             0xFF26 => {
                 (self.allume as u8) << 7
@@ -764,6 +859,8 @@ impl Apu {
                     | (self.c3.on as u8) << 2
                     | (self.c4.on as u8) << 3
             }
+            // GBA : valeurs brutes, gba-core applique ses propres masques.
+            0xFF10..=0xFF2F if self.gba.is_some() => self.regs[(addr - 0xFF10) as usize],
             0xFF10..=0xFF2F => {
                 let i = (addr - 0xFF10) as usize;
                 self.regs[i] | MASQUES[i]
@@ -787,7 +884,17 @@ impl Apu {
         }
     }
 
+    /// GBA : le CPU voit la banque qui n'est pas sélectionnée pour la lecture.
+    fn index_onde_gba(&self, addr: u16) -> usize {
+        ((((self.regs[0x0A] >> 6) & 1) ^ 1) as usize) << 4 | (addr & 0x0F) as usize
+    }
+
     pub fn write(&mut self, addr: u16, v: u8) {
+        if addr >= 0xFF30 && self.gba.is_some() {
+            let i = self.index_onde_gba(addr);
+            self.wave[i] = v;
+            return;
+        }
         if addr >= 0xFF30 {
             if let Some(i) = self.index_onde(addr) {
                 self.wave[i] = v;
@@ -883,9 +990,17 @@ impl Apu {
             0xFF1A => {
                 self.c3.dac = v & 0x80 != 0;
                 self.c3.on &= self.c3.dac;
+                if self.gba.is_some() {
+                    self.regle_onde_gba();
+                }
             }
             0xFF1B => self.c3.long.compte = 256 - v as u16,
-            0xFF1C => self.c3.volume = (v >> 5) & 3,
+            0xFF1C => {
+                self.c3.volume = (v >> 5) & 3;
+                if self.gba.is_some() {
+                    self.regle_onde_gba();
+                }
+            }
             0xFF1D => self.c3.freq = (self.c3.freq & 0x700) | v as u16,
             0xFF1E => {
                 self.c3.freq = (self.c3.freq & 0xFF) | ((v as u16 & 7) << 8);
