@@ -298,8 +298,8 @@ impl App {
                 .fichier
                 .extension()
                 .map(|e| e.to_string_lossy().to_ascii_lowercase());
-            if matches!(ext.as_deref(), Some("gbc" | "gba")) {
-                app.dire("Game Boy Color et Advance : bientôt pris en charge");
+            if ext.as_deref() == Some("gba") {
+                app.dire("Game Boy Advance : bientôt pris en charge");
             } else {
                 app.lancer_partie(rom, titre);
             }
@@ -513,7 +513,8 @@ impl App {
         // Vérification visuelle : pas de carte de reprise, sauf si c'est elle qu'on capture.
         let reprise = self.opts.capture.is_none() || self.opts.menu.as_deref() == Some("reprise");
         match Partie::lancer(rom, titre, sav, etats, reprise) {
-            Ok(p) => {
+            Ok(mut p) => {
+                p.gb.set_color_correction(!self.config.sans_correction);
                 self.hab.stats.lancer(crc);
                 self.fin_jeu();
                 self.partie = Some(p);

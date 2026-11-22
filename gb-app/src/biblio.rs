@@ -41,7 +41,7 @@ impl Plateforme {
     }
 
     pub fn jouable(self) -> bool {
-        self == Plateforme::Gb
+        self != Plateforme::Gba
     }
 }
 
@@ -434,6 +434,8 @@ mod tests {
         // En-tête tronqué : pas de panique.
         assert_eq!(titre_entete(Plateforme::Gb, &d[..0x20]), "");
         assert_eq!(plateforme("gba", &[]), Plateforme::Gba);
+        assert!(Plateforme::Gb.jouable() && Plateforme::Gbc.jouable());
+        assert!(!Plateforme::Gba.jouable());
     }
 
     #[test]

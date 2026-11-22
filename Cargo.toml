@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.1.0"
+version = "0.3.0"
 license = "MIT"
 
 # Le cœur reste optimisé même en debug : les tests ROM tournent des milliers d'images.

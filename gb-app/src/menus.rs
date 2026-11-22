@@ -69,11 +69,14 @@ impl App {
                 v.push(("Reprendre".into(), None, Act::Reprendre));
                 v.push(("États".into(), Some("Sauver, charger".into()), Act::Etats));
                 v.push(("Écran".into(), Some(ecran.into()), Act::Grille));
-                v.push((
-                    "Palette".into(),
-                    Some(self.config.palette.nom().into()),
-                    Act::Palette,
-                ));
+                // GBC : palette DMG sans objet.
+                if !self.partie.as_ref().is_some_and(|p| p.gb.is_cgb()) {
+                    v.push((
+                        "Palette".into(),
+                        Some(self.config.palette.nom().into()),
+                        Act::Palette,
+                    ));
+                }
                 v.push((
                     "Plein écran".into(),
                     Some(if plein { "Oui" } else { "Non" }.into()),
@@ -567,14 +570,13 @@ impl App {
         let Some(partie) = &self.partie else { return };
         const L: usize = gb_core::LARGEUR / 4;
         const H: usize = gb_core::HAUTEUR / 4;
-        let teintes = self.config.palette.teintes();
+        let rgb = crate::etats::ecran_rgb(&partie.gb, &self.config.palette.teintes());
         let mut acc = vec![[0.0f32; 3]; L * H];
-        for (i, &v) in partie.gb.frame().iter().enumerate() {
+        for (i, c) in rgb.as_chunks::<3>().0.iter().enumerate() {
             let (x, y) = (i % gb_core::LARGEUR, i / gb_core::LARGEUR);
             let Some(a) = acc.get_mut((y / 4) * L + x / 4) else {
                 continue;
             };
-            let c = teintes[(v & 3) as usize];
             for k in 0..3 {
                 a[k] += c[k] as f32 / 16.0;
             }
@@ -862,7 +864,11 @@ impl App {
                     .min((zone.height() - 20.0) * ratio)
                     .min(520.0);
                 let r = Rect::from_center_size(zone.center(), Vec2::new(l, l / ratio));
-                let clair = self.config.palette.teintes()[0];
+                let clair = if self.partie.as_ref().is_some_and(|p| p.gb.is_cgb()) {
+                    [255; 3]
+                } else {
+                    self.config.palette.teintes()[0]
+                };
                 d::lueur(
                     &p,
                     r.center(),

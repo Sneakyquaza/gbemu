@@ -242,7 +242,7 @@ impl Partie {
 
     /// Sauvegarde l'état dans l'emplacement `n` (1 à 10) ; message d'erreur sinon.
     pub fn sauver_etat(&mut self, n: usize) -> Result<(), String> {
-        let mini = etats::miniature(self.gb.frame(), &self.teintes);
+        let mini = etats::miniature(&etats::ecran_rgb(&self.gb, &self.teintes));
         match self
             .etats
             .ecrire(Cible::Num(n), &self.gb.save_state(), &mini, false)
@@ -267,7 +267,7 @@ impl Partie {
         };
         let avant = self.gb.save_state();
         self.gb.load_state(&donnees).map_err(message)?;
-        let mini = etats::miniature(self.gb.frame(), &self.teintes);
+        let mini = etats::miniature(&etats::ecran_rgb(&self.gb, &self.teintes));
         // Après le chargement : si l'écriture échoue, l'état d'avant n'est perdu que du disque.
         let _ = self.etats.ecrire(Cible::Annule, &avant, &mini, true);
         self.reprendre();
@@ -325,7 +325,7 @@ impl Partie {
         );
         // Carte de reprise sans réponse : l'ancien état auto est gardé tel quel.
         if self.reprise.is_none() && self.images > 0 {
-            let mini = etats::miniature(self.gb.frame(), &self.teintes);
+            let mini = etats::miniature(&etats::ecran_rgb(&self.gb, &self.teintes));
             let _ = self
                 .etats
                 .ecrire(Cible::Auto, &self.gb.save_state(), &mini, true);

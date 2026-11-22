@@ -65,13 +65,20 @@ pub fn date_relative(date: u64, maintenant: u64) -> String {
     }
 }
 
-/// Miniature PNG RGB 160×144 de l'écran (teintes 0-3) avec la palette donnée.
-pub fn miniature(ecran: &[u8], teintes: &[[u8; 3]; 4]) -> Vec<u8> {
-    let mut rgb = Vec::with_capacity(ecran.len() * 3);
-    for &v in ecran {
-        rgb.extend_from_slice(&teintes[(v & 3) as usize]);
+/// Pixels RGB (160×144×3) de l'écran courant : couleurs du cœur en GBC, palette donnée en DMG.
+pub fn ecran_rgb(gb: &gb_core::GameBoy, teintes: &[[u8; 3]; 4]) -> Vec<u8> {
+    if gb.is_cgb() {
+        return gb.frame_rgb().to_vec();
     }
-    encoder_png(&rgb, gb_core::LARGEUR as u32, gb_core::HAUTEUR as u32).unwrap_or_default()
+    gb.frame()
+        .iter()
+        .flat_map(|&v| teintes[(v & 3) as usize])
+        .collect()
+}
+
+/// Miniature PNG 160×144 à partir des pixels RGB de l'écran (voir [`ecran_rgb`]).
+pub fn miniature(rgb: &[u8]) -> Vec<u8> {
+    encoder_png(rgb, gb_core::LARGEUR as u32, gb_core::HAUTEUR as u32).unwrap_or_default()
 }
 
 /// PNG RGB 8 bits en mémoire.
@@ -266,8 +273,8 @@ mod tests {
 
     #[test]
     fn miniature_decodable() {
-        let ecran = vec![2u8; gb_core::LARGEUR * gb_core::HAUTEUR];
-        let png = miniature(&ecran, &[[1, 2, 3], [4, 5, 6], [7, 8, 9], [0, 0, 0]]);
+        let rgb = [7u8, 8, 9].repeat(gb_core::LARGEUR * gb_core::HAUTEUR);
+        let png = miniature(&rgb);
         let img = crate::jaquettes::decoder(&png).unwrap();
         assert_eq!((img.largeur, img.hauteur), (160, 144));
         assert_eq!(&img.rgba[..4], &[7, 8, 9, 255]);

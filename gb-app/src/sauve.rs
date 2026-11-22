@@ -118,6 +118,8 @@ pub struct Config {
     pub remanence: bool,
     /// Effet rétroéclairé (palette éclaircie, halo).
     pub retroeclaire: bool,
+    /// Correction des couleurs GBC désactivée (couleurs brutes, plus vives).
+    pub sans_correction: bool,
     /// Volume du jeu, 0 à 1 (`None` : 100 %).
     pub volume: Option<f32>,
     pub muet: bool,

@@ -270,14 +270,18 @@ impl App {
     /// Juste après le lancement d'une partie : palette du jeu, miniature de reprise.
     pub(super) fn debut_jeu(&mut self) {
         let force = self.hud.barre_forcee;
+        let cgb = self.partie.as_ref().is_some_and(|p| p.gb.is_cgb());
         self.hud = Hud {
             barre_forcee: force,
-            palette_globale: Some(self.config.palette),
+            // GBC : palette DMG sans objet, rien de mémorisé pour ce jeu.
+            palette_globale: (!cgb).then_some(self.config.palette),
             ..Hud::default()
         };
         let Some(p) = &self.partie else { return };
         if let Some(&pal) = self.config.palettes_jeux.get(&format!("{:08X}", p.crc)) {
-            self.config.palette = pal;
+            if !cgb {
+                self.config.palette = pal;
+            }
         }
         if p.reprise.is_some() {
             if let Some(png) = p.etats.lire_mini(Cible::Auto) {
@@ -430,12 +434,12 @@ impl App {
         let Some(p) = &self.partie else { return };
         const F: usize = 4;
         let (l, h) = (gb_core::LARGEUR, gb_core::HAUTEUR);
-        let teintes = self.config.palette.teintes();
-        let ecran = p.gb.frame();
+        let ecran = etats::ecran_rgb(&p.gb, &self.config.palette.teintes());
         let mut rgb = Vec::with_capacity(l * h * F * F * 3);
         for y in 0..h * F {
             for x in 0..l * F {
-                rgb.extend_from_slice(&teintes[(ecran[(y / F) * l + x / F] & 3) as usize]);
+                let i = ((y / F) * l + x / F) * 3;
+                rgb.extend_from_slice(&ecran[i..i + 3]);
             }
         }
         let nom = format!("{} {}.png", nom_sur(&p.titre), etats::maintenant());
@@ -489,25 +493,34 @@ impl App {
         let Some(partie) = &self.partie else { return };
 
         let retro = self.config.retroeclaire;
-        let mut teintes = self.config.palette.teintes();
+        let teintes = self.config.palette.teintes();
+        let mut rgb = etats::ecran_rgb(&partie.gb, &teintes);
+        // Teinte claire de référence (lueur, grille) : blanc en GBC.
+        let mut c0 = if partie.gb.is_cgb() {
+            [255; 3]
+        } else {
+            teintes[0]
+        };
         if retro {
             // Rétroéclairé : noirs relevés, teintes éclaircies.
-            teintes = teintes.map(|c| c.map(|v| (v as f32 * 0.8 + 48.0) as u8));
+            let eclaircir = |v: u8| (v as f32 * 0.8 + 48.0) as u8;
+            rgb.iter_mut().for_each(|v| *v = eclaircir(*v));
+            c0 = c0.map(eclaircir);
         }
         let images = partie.images;
         let reman = self.config.remanence;
-        let ecran_gb = partie.gb.frame();
+        let n = rgb.len() / 3;
         let px: Vec<Color32> = if reman {
-            let neuf = images != self.hud.vues || self.hud.prec.len() != ecran_gb.len();
-            if self.hud.prec.len() != ecran_gb.len() {
-                self.hud.prec = vec![[0.0; 3]; ecran_gb.len()];
-                for (d, &v) in self.hud.prec.iter_mut().zip(ecran_gb) {
-                    let c = teintes[(v & 3) as usize];
-                    *d = [c[0] as f32, c[1] as f32, c[2] as f32];
-                }
+            let neuf = images != self.hud.vues || self.hud.prec.len() != n;
+            if self.hud.prec.len() != n {
+                self.hud.prec = rgb
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|c| [c[0] as f32, c[1] as f32, c[2] as f32])
+                    .collect();
             } else if neuf {
-                for (d, &v) in self.hud.prec.iter_mut().zip(ecran_gb) {
-                    let c = teintes[(v & 3) as usize];
+                for (d, c) in self.hud.prec.iter_mut().zip(rgb.as_chunks::<3>().0.iter()) {
                     for k in 0..3 {
                         d[k] = d[k] * 0.5 + c[k] as f32 * 0.5;
                     }
@@ -520,12 +533,10 @@ impl App {
                 .collect()
         } else {
             self.hud.prec.clear();
-            ecran_gb
+            rgb.as_chunks::<3>()
+                .0
                 .iter()
-                .map(|&v| {
-                    let c = teintes[(v & 3) as usize];
-                    Color32::from_rgb(c[0], c[1], c[2])
-                })
+                .map(|c| Color32::from_rgb(c[0], c[1], c[2]))
                 .collect()
         };
         self.hud.vues = images;
@@ -548,7 +559,6 @@ impl App {
         let coin = ((ecran.center() - taille * 0.5) * ppp).round() / ppp;
         let r = Rect::from_min_size(coin, taille);
         // Lueur douce de la teinte claire autour de l'écran (plus forte en rétroéclairé).
-        let c0 = teintes[0];
         let (force, flou) = if retro { (0.34, 72.0) } else { (0.16, 44.0) };
         p.add(
             egui::epaint::Shadow {
@@ -577,7 +587,7 @@ impl App {
         }
         if self.config.grille && echelle >= 3.0 {
             let pas = echelle / ppp;
-            let c = teintes[0];
+            let c = c0;
             let trait_lcd = Stroke::new(
                 (echelle / 6.0).floor().max(1.0) / ppp,
                 Color32::from_rgba_unmultiplied(c[0] / 2, c[1] / 2, c[2] / 2, 46),
@@ -930,11 +940,20 @@ impl App {
     /// Popover des filtres d'écran et de la palette (au-dessus du bouton « Écran »).
     fn dessiner_filtres(&mut self, ui: &egui::Ui, p: &Painter, bouton: Rect, bas: f32) {
         let t = j();
+        let cgb = self.partie.as_ref().is_some_and(|p| p.gb.is_cgb());
+        // GBC : la palette DMG est remplacée par la correction des couleurs.
         let lignes = [
             ("Grille LCD", Some(self.config.grille)),
             ("Rémanence", Some(self.config.remanence)),
             ("Rétroéclairé", Some(self.config.retroeclaire)),
-            ("Palette", None),
+            if cgb {
+                (
+                    "Correction des couleurs",
+                    Some(!self.config.sans_correction),
+                )
+            } else {
+                ("Palette", None)
+            },
         ];
         let (l, h_l) = (250.0, 40.0);
         let h = lignes.len() as f32 * h_l + 16.0;
@@ -1016,6 +1035,12 @@ impl App {
                 0 => self.config.grille = !self.config.grille,
                 1 => self.config.remanence = !self.config.remanence,
                 2 => self.config.retroeclaire = !self.config.retroeclaire,
+                _ if cgb => {
+                    self.config.sans_correction = !self.config.sans_correction;
+                    if let Some(pa) = &mut self.partie {
+                        pa.gb.set_color_correction(!self.config.sans_correction);
+                    }
+                }
                 _ => {
                     self.config.palette = self.config.palette.suivante();
                     if let Some(pa) = &self.partie {
