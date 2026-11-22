@@ -1,0 +1,10 @@
+[package]
+name = "gba-headless"
+description = "Exécuteur Game Boy Advance sans écran pour les ROM de test"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+gba-core = { path = "../gba-core" }
+png = "0.17"

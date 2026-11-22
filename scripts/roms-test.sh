@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Retélécharge les ROM de test publiques dans roms/ (ignoré par git).
 # Sources officielles : blargg (miroir retrio/gb-test-roms), mooneye-test-suite (gekkio.fi),
-# dmg-acid2 et cgb-acid2 (mattcurrie). Chaque archive est extraite dans son propre dossier vide.
+# dmg-acid2 et cgb-acid2 (mattcurrie), GBA : jsmolka gba-tests, FuzzARM, armwrestler.
+# Chaque archive est extraite dans son propre dossier vide.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROMS=roms
@@ -42,7 +43,25 @@ if [ ! -d "$ROMS/cgb-acid2" ]; then
   mv "$d" "$ROMS/cgb-acid2"
 fi
 
+# GBA : jsmolka gba-tests (MIT), FuzzARM (DenSinH, GPL-3.0, ROM générées), armwrestler corrigé (destoer)
+GBA_TESTS_SHA=a7113b67e63f83a9b321696ddd7042ccfad6c881
+FUZZARM_SHA=a675329cd57da48e3e406216ba2d79dd7e09ee20
+ARMWRESTLER_SHA=802e55ad61b421f4bbbc6f74f96aa4e5df4d630f
+gh_archive() { # dépôt sha dossier
+  [ -d "$ROMS/$3" ] && return 0
+  local d n
+  d=$(mktemp -d "$ROMS/.dl_$3.XXXX")
+  n=${1#*/}
+  curl -fsSL -o "$d/a.tar.gz" "https://github.com/$1/archive/$2.tar.gz"
+  mkdir "$d/x" && tar -xzf "$d/a.tar.gz" -C "$d/x"
+  mv "$d/x/$n-$2" "$ROMS/$3"
+}
+gh_archive jsmolka/gba-tests "$GBA_TESTS_SHA" gba-tests
+gh_archive DenSinH/FuzzARM "$FUZZARM_SHA" fuzzarm
+gh_archive destoer/armwrestler-gba-fixed "$ARMWRESTLER_SHA" armwrestler
+
 test -f "$ROMS/blargg/dmg_sound/dmg_sound.gb" || { echo "dmg_sound absent de $ROMS/blargg" >&2; exit 1; }
 test -f "$ROMS/blargg/cgb_sound/cgb_sound.gb" || { echo "cgb_sound absent de $ROMS/blargg" >&2; exit 1; }
+test -f "$ROMS/gba-tests/arm/arm.gba" || { echo "arm.gba absent de $ROMS/gba-tests" >&2; exit 1; }
 
 echo "ROM de test prêtes dans $ROMS/ (archives téléchargées conservées dans $ROMS/.dl_*)."

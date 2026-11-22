@@ -1,5 +1,5 @@
 [workspace]
-members = ["gb-core", "gb-headless", "gb-app"]
+members = ["gb-core", "gb-headless", "gb-app", "gba-core", "gba-headless"]
 resolver = "2"
 
 [workspace.package]
@@ -9,6 +9,9 @@ license = "MIT"
 
 # Le cœur reste optimisé même en debug : les tests ROM tournent des milliers d'images.
 [profile.dev.package.gb-core]
+opt-level = 3
+
+[profile.dev.package.gba-core]
 opt-level = 3
 
 [profile.release]

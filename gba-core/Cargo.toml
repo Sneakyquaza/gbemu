@@ -1,0 +1,8 @@
+[package]
+name = "gba-core"
+description = "Cœur d'émulation Game Boy Advance, sans E/S"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
