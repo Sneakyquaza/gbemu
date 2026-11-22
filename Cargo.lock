@@ -838,6 +838,7 @@ dependencies = [
  "cpal",
  "crc32fast",
  "eframe",
+ "flate2",
  "gb-core",
  "gba-core",
  "gilrs",

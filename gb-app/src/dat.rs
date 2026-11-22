@@ -1,12 +1,16 @@
 //! Reconnaissance des jeux : DAT No-Intro et métadonnées `metadat/` de libretro-database
 //! (CC BY-SA 4.0 : année et mois, développeur, éditeur, genre, joueurs, classement ESRB), par CRC.
-//! Téléchargées au premier lancement puis lues depuis le cache (relues tous les 90 jours).
-//! Mode hors ligne : jamais de téléchargement.
+//! Base intégrée à l'exe (`donnees/jeux.bin`, produite par `scripts/donnees-jeux.py`, avec les
+//! résumés Wikipédia CC BY-SA) ; les DAT téléchargés (mise à jour facultative, Réglages >
+//! Métadonnées) la complètent depuis le cache. Mode hors ligne : jamais de téléchargement.
 
 use crate::biblio::Plateforme;
 use std::collections::HashMap;
 use std::io::Read as _;
 use std::path::Path;
+
+/// Base intégrée (format décrit dans `scripts/donnees-jeux.py`).
+const INTEGREE: &[u8] = include_bytes!("../donnees/jeux.bin");
 use std::time::Duration;
 
 /// Âge (jours) au-delà duquel un DAT en cache est téléchargé à nouveau.
@@ -29,6 +33,21 @@ pub struct InfoJeu {
     /// Nombre maximal de joueurs.
     pub joueurs: Option<u8>,
     pub esrb: String,
+    /// Introduction Wikipédia (1 à 3 phrases), vide si aucune.
+    pub resume: String,
+    /// Article source du résumé : « fr:Titre » ou « en:Titre ».
+    pub source_resume: String,
+}
+
+impl InfoJeu {
+    /// Adresse de l'article Wikipédia du résumé.
+    pub fn url_resume(&self) -> Option<String> {
+        let (langue, titre) = self.source_resume.split_once(':')?;
+        Some(format!(
+            "https://{langue}.wikipedia.org/wiki/{}",
+            encoder_url(&titre.replace(' ', "_"))
+        ))
+    }
 }
 
 /// Fichiers `metadat/<dossier>` lus après les noms : (dossier, clé dans le bloc `game`).
@@ -117,11 +136,12 @@ fn telecharger(agent: &ureq::Agent, local: &Path, sous: &str, p: Plateforme) -> 
     Some(texte)
 }
 
-/// Charge (et télécharge si besoin) les noms et années des trois plateformes.
-pub fn charger(dossier: &Path) -> Base {
+/// Base intégrée, complétée par les DAT du cache. `en_ligne` : DAT manquants ou périmés
+/// téléchargés d'abord (mise à jour demandée par l'utilisateur, jamais en mode hors ligne).
+pub fn charger(dossier: &Path, en_ligne: bool) -> Base {
     let agent = agent();
-    let hors_ligne = crate::sauve::hors_ligne();
-    let mut base = Base::default();
+    let hors_ligne = !en_ligne || crate::sauve::hors_ligne();
+    let mut base = integree();
     for p in [Plateforme::Gb, Plateforme::Gbc, Plateforme::Gba] {
         if let Some(t) = obtenir(&agent, dossier, "no-intro", p, hors_ligne) {
             lire_nointro(&t, p, &mut base);
@@ -129,21 +149,78 @@ pub fn charger(dossier: &Path) -> Base {
         if let Some(t) = obtenir(&agent, dossier, "releaseyear", p, hors_ligne) {
             lire_annees(&t, &mut base);
         }
+        for (sous, cle) in METADAT {
+            if let Some(t) = obtenir(&agent, dossier, sous, p, hors_ligne) {
+                lire_champ(&t, cle, &mut base);
+            }
+        }
     }
     base
 }
 
-/// Ajoute les autres métadonnées (développeur, éditeur…) ; à appeler après [`charger`].
-pub fn completer(dossier: &Path, base: &mut Base) {
-    let agent = agent();
-    let hors_ligne = crate::sauve::hors_ligne();
-    for p in [Plateforme::Gb, Plateforme::Gbc, Plateforme::Gba] {
-        for (sous, cle) in METADAT {
-            if let Some(t) = obtenir(&agent, dossier, sous, p, hors_ligne) {
-                lire_champ(&t, cle, base);
-            }
-        }
+/// Base intégrée à l'exe (vide si illisible, sans panique).
+pub fn integree() -> Base {
+    lire_integree(INTEGREE).unwrap_or_default()
+}
+
+/// Lit le format « GBJX » version 1 : en-tête, puis flux zlib (chaînes, puis jeux).
+fn lire_integree(d: &[u8]) -> Option<Base> {
+    let flux = d.strip_prefix(b"GBJX\x01")?;
+    let mut brut = Vec::new();
+    flate2::read::ZlibDecoder::new(flux)
+        .take(64 << 20)
+        .read_to_end(&mut brut)
+        .ok()?;
+    let mut o = &brut[..];
+    let mut lire = |n: usize| -> Option<&[u8]> {
+        let (a, b) = o.split_at_checked(n)?;
+        o = b;
+        Some(a)
+    };
+    let u32_ = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    let nb = u32_(lire(4)?) as usize;
+    let mut chaines = Vec::with_capacity(nb.min(1 << 20));
+    for _ in 0..nb {
+        let l = lire(2)?;
+        let l = u16::from_le_bytes([l[0], l[1]]) as usize;
+        chaines.push(std::str::from_utf8(lire(l)?).ok()?);
     }
+    let nj = u32_(lire(4)?) as usize;
+    let mut base = Base::default();
+    base.jeux.reserve(nj.min(1 << 20));
+    for _ in 0..nj {
+        let e = lire(4 + 1 + 2 + 1 + 1 + 8 * 4)?;
+        let s = |k: usize| -> Option<String> {
+            Some(chaines.get(u32_(&e[9 + 4 * k..]) as usize)?.to_string())
+        };
+        let plateforme = match e[4] {
+            0 => Plateforme::Gb,
+            1 => Plateforme::Gbc,
+            2 => Plateforme::Gba,
+            _ => return None,
+        };
+        let nom = s(0)?;
+        let annee = u16::from_le_bytes([e[5], e[6]]);
+        base.jeux.insert(
+            u32_(e),
+            InfoJeu {
+                titre: titre_lisible(&nom),
+                nom,
+                region: s(1)?,
+                annee: (annee != 0).then_some(annee),
+                plateforme,
+                mois: (1..=12).contains(&e[7]).then_some(e[7]),
+                joueurs: (e[8] != 0).then_some(e[8]),
+                developpeur: s(2)?,
+                editeur: s(3)?,
+                genre: s(4)?,
+                esrb: s(5)?,
+                resume: s(6)?,
+                source_resume: s(7)?,
+            },
+        );
+    }
+    Some(base)
 }
 
 #[derive(Debug, PartialEq)]
@@ -228,12 +305,24 @@ fn lire_nointro(t: &str, p: Plateforme, base: &mut Base) {
             return;
         };
         let annee = c.get("releaseyear").and_then(|a| a.parse().ok());
+        let region = c.get("region").unwrap_or(&"").to_string();
+        // Jeu déjà dans la base intégrée : nom et région mis à jour, le reste gardé.
+        if let Some(j) = base.jeux.get_mut(&crc) {
+            j.nom = nom.to_string();
+            j.titre = titre_lisible(nom);
+            j.region = region;
+            j.plateforme = p;
+            if annee.is_some() {
+                j.annee = annee;
+            }
+            return;
+        }
         base.jeux.insert(
             crc,
             InfoJeu {
                 nom: nom.to_string(),
                 titre: titre_lisible(nom),
-                region: c.get("region").unwrap_or(&"").to_string(),
+                region,
                 annee,
                 plateforme: p,
                 mois: None,
@@ -242,6 +331,8 @@ fn lire_nointro(t: &str, p: Plateforme, base: &mut Base) {
                 genre: String::new(),
                 joueurs: None,
                 esrb: String::new(),
+                resume: String::new(),
+                source_resume: String::new(),
             },
         );
     });
@@ -275,8 +366,9 @@ fn lire_champ(t: &str, cle: &str, base: &mut Base) {
         };
         let v = v.trim();
         match cle {
-            "developer" => j.developpeur = v.to_string(),
-            "publisher" => j.editeur = v.to_string(),
+            // « Nintendo ??? » : studio incertain chez libretro, la société seule reste.
+            "developer" => j.developpeur = v.trim_end_matches('?').trim_end().to_string(),
+            "publisher" => j.editeur = v.trim_end_matches('?').trim_end().to_string(),
             "genre" => j.genre = v.to_string(),
             "releasemonth" => j.mois = v.parse().ok().filter(|m| (1..=12).contains(m)),
             "users" => j.joueurs = v.parse().ok().filter(|&n| n > 0),
@@ -346,7 +438,11 @@ game (
         let bloc = |k: &str, v: &str| {
             format!("clrmamepro ( name \"x\" )\ngame (\n\tcomment \"c\"\n\t{k} {v}\n\trom ( crc 9A024415 )\n)\ngame (\n\t{k} {v}\n\trom ( crc 11111111 )\n)\n")
         };
-        lire_champ(&bloc("developer", "\"Morning Star\""), "developer", &mut b);
+        lire_champ(
+            &bloc("developer", "\"Morning Star ???\""),
+            "developer",
+            &mut b,
+        );
         lire_champ(&bloc("publisher", "\"Majesco\""), "publisher", &mut b);
         lire_champ(&bloc("genre", "\"Sports\""), "genre", &mut b);
         lire_champ(&bloc("releasemonth", "\"8\""), "releasemonth", &mut b);
@@ -368,6 +464,70 @@ game (
         assert_eq!((j.mois, j.joueurs), (None, None));
         // Bloc tronqué : aucune panique.
         lire_champ("game ( genre \"Puzzle\" rom ( crc", "genre", &mut b);
+    }
+
+    #[test]
+    fn base_integree() {
+        let b = integree();
+        assert!(b.jeux.len() > 7000, "{} jeux", b.jeux.len());
+        let avec_resume = b.jeux.values().filter(|j| !j.resume.is_empty()).count();
+        assert!(avec_resume > 1000, "{avec_resume} résumés");
+        // Tetris (World) (Rev 1), Game Boy.
+        let t = &b.jeux[&0x46DF_91AD];
+        assert_eq!(t.plateforme, Plateforme::Gb);
+        assert!(t.nom.starts_with("Tetris (World)"));
+        assert_eq!(t.editeur, "Nintendo");
+        assert!(t.source_resume.starts_with("fr:"), "{}", t.source_resume);
+        assert!(t
+            .url_resume()
+            .unwrap()
+            .starts_with("https://fr.wikipedia.org/wiki/Tetris"));
+    }
+
+    #[test]
+    fn integree_abimee_sans_panique() {
+        use std::io::Write as _;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        // 2 chaînes (« », « Jeu (France) »), 1 jeu GBC 1999/12, 2 joueurs, résumé = chaîne 1.
+        let mut brut = 2u32.to_le_bytes().to_vec();
+        brut.extend(0u16.to_le_bytes());
+        brut.extend(12u16.to_le_bytes());
+        brut.extend(b"Jeu (France)");
+        brut.extend(1u32.to_le_bytes());
+        brut.extend(0x1234_5678u32.to_le_bytes());
+        brut.push(1);
+        brut.extend(1999u16.to_le_bytes());
+        brut.extend([12, 2]);
+        for k in [1u32, 0, 0, 0, 0, 0, 1, 0] {
+            brut.extend(k.to_le_bytes());
+        }
+        z.write_all(&brut).unwrap();
+        let mut d = b"GBJX\x01".to_vec();
+        d.extend(z.finish().unwrap());
+        let b = lire_integree(&d).unwrap();
+        let j = &b.jeux[&0x1234_5678];
+        assert_eq!(
+            (j.plateforme, j.annee, j.mois, j.joueurs),
+            (Plateforme::Gbc, Some(1999), Some(12), Some(2))
+        );
+        assert_eq!(
+            (j.titre.as_str(), j.resume.as_str()),
+            ("Jeu", "Jeu (France)")
+        );
+        assert_eq!(j.url_resume(), None);
+        // Tronqué partout, mauvais en-tête, indice de chaîne hors limites : None, sans panique.
+        for n in 0..d.len() {
+            let _ = lire_integree(&d[..n]);
+        }
+        assert!(lire_integree(b"GBJX\x02").is_none());
+        let mut faux = brut.clone();
+        let k = faux.len() - 4;
+        faux[k] = 9;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        z.write_all(&faux).unwrap();
+        let mut d = b"GBJX\x01".to_vec();
+        d.extend(z.finish().unwrap());
+        assert!(lire_integree(&d).is_none());
     }
 
     #[test]

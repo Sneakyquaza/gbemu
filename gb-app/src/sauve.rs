@@ -54,6 +54,33 @@ fn chemins_utf8<S: Serializer>(c: &[PathBuf], s: S) -> Result<S::Ok, S::Error> {
     s.collect_seq(c.iter().filter(|c| c.to_str().is_some()))
 }
 
+/// Jeux ajoutés : téléchargement des infos et images.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NouveauxJeux {
+    #[default]
+    Demander,
+    Toujours,
+    Jamais,
+}
+
+impl NouveauxJeux {
+    pub fn nom(self) -> &'static str {
+        match self {
+            NouveauxJeux::Demander => "Demander",
+            NouveauxJeux::Toujours => "Toujours télécharger",
+            NouveauxJeux::Jamais => "Ne pas télécharger",
+        }
+    }
+
+    pub fn suivant(self) -> NouveauxJeux {
+        match self {
+            NouveauxJeux::Demander => NouveauxJeux::Toujours,
+            NouveauxJeux::Toujours => NouveauxJeux::Jamais,
+            NouveauxJeux::Jamais => NouveauxJeux::Demander,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Palette {
     #[default]
@@ -192,6 +219,9 @@ pub struct Config {
     /// Aucun téléchargement (noms des jeux, jaquettes).
     #[serde(deserialize_with = "ou_defaut")]
     pub hors_ligne: bool,
+    /// Jeux ajoutés : proposer, faire ou ne pas faire le téléchargement des infos et images.
+    #[serde(deserialize_with = "ou_defaut")]
+    pub nouveaux_jeux: NouveauxJeux,
 }
 
 pub struct Chemins {

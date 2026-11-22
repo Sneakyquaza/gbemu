@@ -6,3 +6,4 @@ CLAUDE.md
 *.sav
 /references
 screenscraper-dev.json
+__pycache__/

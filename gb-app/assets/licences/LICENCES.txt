@@ -4,7 +4,7 @@ gbemu (émulateur Game Boy, Game Boy Color et Game Boy Advance) est distribué s
 Il ne contient aucun jeu ni aucun BIOS Nintendo. Les sons d'interface sont synthétisés par le
 programme lui-même (aucun échantillon tiers). L'icône du programme a été dessinée pour gbemu.
 
-Sommaire : 1. BIOS GBA libre  2. Polices  3. Noms de jeux et jaquettes (réseau)
+Sommaire : 1. BIOS GBA libre  2. Polices  3. Données des jeux (intégrées et réseau)
            4. Bibliothèques Rust  5. Texte de la licence MIT  6. Texte de la licence Apache 2.0
 
 
@@ -132,24 +132,34 @@ This Font Software is licensed under the SIL Open Font License, Version 1.1.
 
 
 ========================================================================
-3. Noms de jeux et jaquettes (réseau)
+3. Données des jeux (intégrées et réseau)
 
-Les noms, régions, dates, éditeurs, développeurs, genres, nombres de joueurs et classements
-des jeux viennent de libretro-database (DAT No-Intro et dossiers « metadat »), sous licence
-Creative Commons Attribution-ShareAlike 4.0 :
-https://github.com/libretro/libretro-database
-https://creativecommons.org/licenses/by-sa/4.0/
+Base intégrée au programme (aucun téléchargement nécessaire) :
+- Noms, régions, dates, éditeurs, développeurs, genres, nombres de joueurs et classements des
+  jeux : libretro-database (DAT No-Intro et dossiers « metadat »), Creative Commons
+  Attribution-ShareAlike 4.0, https://github.com/libretro/libretro-database
+- Résumés des jeux : introductions d'articles de Wikipédia (en français, en anglais à défaut),
+  Creative Commons Attribution-ShareAlike 4.0, https://fr.wikipedia.org et
+  https://en.wikipedia.org ; chaque fiche affiche « Résumé : Wikipédia » avec le lien de
+  l'article source (auteurs : historique de l'article). Introductions raccourcies à 1-3
+  phrases. Appariement des jeux par Wikidata (CC0), https://www.wikidata.org
+- Licence : https://creativecommons.org/licenses/by-sa/4.0/
+Ces données (fichier gb-app/donnees/jeux.bin) restent sous CC BY-SA 4.0 ; le script qui les
+produit est scripts/donnees-jeux.py.
+
+Réseau (facultatif) :
 Les jaquettes, écrans titre et captures viennent de libretro-thumbnails
-(https://thumbnails.libretro.com) ; ils restent la propriété de leurs auteurs et ne sont
+(https://github.com/libretro-thumbnails, sinon https://thumbnails.libretro.com) ; ils restent la propriété de leurs auteurs et ne sont
 affichés que sur votre machine.
 
 Facultatif : résumés, notes et logos de ScreenScraper (https://www.screenscraper.fr), seulement
-si des identifiants sont saisis dans Réglages > Métadonnées, pour chaque fiche de jeu ouverte.
+si des identifiants sont saisis dans Réglages > Métadonnées.
 
-Ce qui part sur le réseau : au premier lancement, le téléchargement des DAT (GitHub), puis
-l'adresse des images de chaque jeu reconnu (elle contient le nom du jeu). Avec ScreenScraper :
-l'empreinte (CRC), la taille et le nom de fichier du jeu dont la fiche est ouverte, avec vos
-identifiants, en HTTPS vers screenscraper.fr uniquement. Rien d'autre.
+Ce qui part sur le réseau : l'adresse des images de chaque jeu reconnu (elle contient le nom
+du jeu), à l'affichage ou au téléchargement groupé accepté après l'ajout de jeux ; la mise à
+jour de la base (GitHub) seulement sur demande (Réglages > Métadonnées). Avec ScreenScraper :
+l'empreinte (CRC), la taille et le nom de fichier du jeu, avec vos identifiants, en HTTPS vers
+screenscraper.fr uniquement. Rien d'autre.
 Réglages > « Hors ligne » coupe tout téléchargement.
 
 

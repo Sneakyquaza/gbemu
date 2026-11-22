@@ -1,5 +1,5 @@
 //! Vignettes libretro-thumbnails (jaquettes Named_Boxarts, écrans titre Named_Titles, captures
-//! Named_Snaps) : téléchargées à la demande pour les jeux reconnus, mises en cache sur disque,
+//! Named_Snaps ; dépôt GitHub, sinon thumbnails.libretro.com) : téléchargées à la demande pour les jeux reconnus, mises en cache sur disque,
 //! décodées et réduites hors du fil de l'interface.
 
 use crate::biblio::Plateforme;
@@ -131,6 +131,111 @@ fn boucle(
     }
 }
 
+/// Fichier du cache d'une vignette, et son marqueur « absent ».
+fn chemins_cache(dossier: &Path, p: Plateforme, nom: &str, v: Vignette) -> (PathBuf, PathBuf) {
+    let mut local = dossier.join(p.court());
+    if let Some(s) = v.sous_dossier() {
+        local.push(s);
+    }
+    let local = local.join(format!("{}.png", nom_fichier(nom)));
+    let absent = local.with_extension("absent");
+    (local, absent)
+}
+
+/// Marqueur « absent » récent. Marqueurs vides (v0.7, écrits pendant une panne de
+/// thumbnails.libretro.com) ignorés.
+fn absent_recent(absent: &Path) -> bool {
+    std::fs::read(absent).is_ok_and(|d| d == MARQUE_ABSENT) && !perime(absent, JOURS_ABSENT)
+}
+
+const MARQUE_ABSENT: &[u8] = b"2";
+
+/// Réponse d'un serveur de vignettes.
+enum Reponse {
+    Png(Vec<u8>),
+    /// Lien symbolique du dépôt (GitHub renvoie le nom du fichier visé).
+    Lien(String),
+    Introuvable,
+    Refus,
+}
+
+fn demander(agent: &ureq::Agent, url: &str) -> Result<Reponse, ()> {
+    match agent.get(url).call() {
+        Ok(rep) => {
+            let mut d = Vec::new();
+            if rep.into_reader().take(8 << 20).read_to_end(&mut d).is_err() {
+                return Ok(Reponse::Refus);
+            }
+            if d.starts_with(b"\x89PNG") {
+                return Ok(Reponse::Png(d));
+            }
+            Ok(match std::str::from_utf8(&d) {
+                Ok(t) if d.len() < 512 && t.trim().ends_with(".png") && !t.contains("..") => {
+                    Reponse::Lien(t.trim().to_string())
+                }
+                _ => Reponse::Refus,
+            })
+        }
+        Err(ureq::Error::Status(404, _)) => Ok(Reponse::Introuvable),
+        Err(ureq::Error::Status(..)) => Ok(Reponse::Refus),
+        Err(_) => Err(()),
+    }
+}
+
+/// Télécharge la vignette dans le cache : `Ok(Some)` PNG reçu et gardé, `Ok(None)` inexistante
+/// (marquée absente) ou refusée, `Err` serveurs injoignables (réseau coupé).
+/// Dépôt libretro-thumbnails sur GitHub d'abord (thumbnails.libretro.com vide le 22/11/2026),
+/// le serveur libretro ensuite.
+fn telecharger(
+    agent: &ureq::Agent,
+    p: Plateforme,
+    nom: &str,
+    v: Vignette,
+    local: &Path,
+    absent: &Path,
+) -> Result<Option<Vec<u8>>, ()> {
+    let fichier = encoder_url(&nom_fichier(nom));
+    let depot = format!(
+        "https://raw.githubusercontent.com/libretro-thumbnails/{}/master/{}/",
+        systeme(p).replace(' ', "_"),
+        v.dossier_distant()
+    );
+    let serveur = format!(
+        "https://thumbnails.libretro.com/{}/{}/",
+        encoder_url(systeme(p)),
+        v.dossier_distant()
+    );
+    let mut injoignable = true;
+    let mut introuvable = true;
+    for base in [&depot, &serveur] {
+        let mut rep = demander(agent, &format!("{base}{fichier}.png"));
+        if let Ok(Reponse::Lien(cible)) = &rep {
+            let cible = cible.rsplit('/').next().unwrap_or(cible);
+            rep = demander(agent, &format!("{base}{}", encoder_url(cible)));
+        }
+        match rep {
+            Ok(Reponse::Png(d)) => {
+                let _ = crate::sauve::ecrire_atomique(local, &d);
+                return Ok(Some(d));
+            }
+            Ok(Reponse::Introuvable) => injoignable = false,
+            Ok(_) => {
+                injoignable = false;
+                introuvable = false;
+            }
+            Err(()) => introuvable = false,
+        }
+    }
+    if injoignable {
+        return Err(());
+    }
+    // Introuvable partout : on le note pour ne plus la redemander.
+    if introuvable {
+        let _ = crate::sauve::ecrire_atomique(absent, MARQUE_ABSENT);
+    }
+    Ok(None)
+}
+
 /// Vignette en cache, sinon téléchargée (jamais `hors_ligne`).
 fn obtenir(
     agent: &ureq::Agent,
@@ -140,40 +245,37 @@ fn obtenir(
     v: Vignette,
     hors_ligne: bool,
 ) -> Option<Image> {
-    let fichier = nom_fichier(nom);
-    let mut local = dossier.join(p.court());
-    if let Some(s) = v.sous_dossier() {
-        local.push(s);
-    }
-    let local = local.join(format!("{fichier}.png"));
-    let absent = local.with_extension("absent");
+    let (local, absent) = chemins_cache(dossier, p, nom, v);
     if let Ok(d) = std::fs::read(&local) {
         return decoder(&d);
     }
-    if hors_ligne || (absent.exists() && !perime(&absent, JOURS_ABSENT)) {
+    if hors_ligne || absent_recent(&absent) {
         return None;
     }
-    let url = format!(
-        "https://thumbnails.libretro.com/{}/{}/{}.png",
-        encoder_url(systeme(p)),
-        v.dossier_distant(),
-        encoder_url(&fichier)
-    );
-    match agent.get(&url).call() {
-        Ok(rep) => {
-            let mut d = Vec::new();
-            rep.into_reader().take(8 << 20).read_to_end(&mut d).ok()?;
-            let img = decoder(&d)?;
-            let _ = crate::sauve::ecrire_atomique(&local, &d);
-            Some(img)
-        }
-        // Jaquette inexistante : on le note pour ne plus la redemander.
-        Err(ureq::Error::Status(404, _)) => {
-            let _ = crate::sauve::ecrire_atomique(&absent, b"");
-            None
-        }
-        Err(_) => None,
+    decoder(&telecharger(agent, p, nom, v, &local, &absent).ok()??)
+}
+
+/// Vrai si la vignette reste à demander (ni en cache, ni notée absente récemment).
+pub fn manquante(dossier: &Path, p: Plateforme, nom: &str, v: Vignette) -> bool {
+    let (local, absent) = chemins_cache(dossier, p, nom, v);
+    !local.exists() && !absent_recent(&absent)
+}
+
+/// Met la vignette en cache sans la décoder (téléchargement groupé). `force` : redemandée même
+/// notée absente. `Ok(true)` si une requête a été faite, `Err` serveur injoignable.
+pub fn precharger(
+    agent: &ureq::Agent,
+    dossier: &Path,
+    p: Plateforme,
+    nom: &str,
+    v: Vignette,
+    force: bool,
+) -> Result<bool, ()> {
+    let (local, absent) = chemins_cache(dossier, p, nom, v);
+    if local.exists() || (!force && !manquante(dossier, p, nom, v)) {
+        return Ok(false);
     }
+    telecharger(agent, p, nom, v, &local, &absent).map(|_| true)
 }
 
 /// Décode un PNG en RGBA et le réduit (moyenne par zones) à [`COTE_MAX`]. Jamais de panique.
@@ -246,6 +348,33 @@ mod tests {
         }
         // Aucun marqueur « absent » : la jaquette sera demandée une fois en ligne.
         assert!(std::fs::read_dir(&d.0).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn marqueurs_absents() {
+        let d = crate::sauve::DossierTest::new("absents");
+        let (_, absent) = chemins_cache(&d.0, Plateforme::Gba, "Jeu (Europe)", Vignette::Titre);
+        assert!(manquante(
+            &d.0,
+            Plateforme::Gba,
+            "Jeu (Europe)",
+            Vignette::Titre
+        ));
+        // Marqueur vide de la v0.7 (panne du serveur libretro) : ignoré.
+        crate::sauve::ecrire_atomique(&absent, b"").unwrap();
+        assert!(manquante(
+            &d.0,
+            Plateforme::Gba,
+            "Jeu (Europe)",
+            Vignette::Titre
+        ));
+        crate::sauve::ecrire_atomique(&absent, MARQUE_ABSENT).unwrap();
+        assert!(!manquante(
+            &d.0,
+            Plateforme::Gba,
+            "Jeu (Europe)",
+            Vignette::Titre
+        ));
     }
 
     #[test]

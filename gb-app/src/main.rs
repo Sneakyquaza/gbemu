@@ -18,6 +18,7 @@ mod sauve;
 mod screenscraper;
 mod sons_ui;
 mod stats;
+mod telechargement;
 mod touches;
 
 use std::io::Write as _;

@@ -44,7 +44,7 @@ struct EtatVu {
 }
 
 pub(super) struct Panneau {
-    crc: u32,
+    pub(super) crc: u32,
     ouvert_a: f64,
     /// Bouton choisi (voir `boutons`).
     bouton: usize,
@@ -55,6 +55,7 @@ pub(super) struct Panneau {
 enum ActFiche {
     Jouer,
     Favori,
+    Telecharger,
     Filtre(Champ),
 }
 
@@ -87,6 +88,8 @@ pub(super) fn base_demo(roms: &[Rom]) -> Base {
                 } else {
                     String::new()
                 },
+                resume: String::new(),
+                source_resume: String::new(),
             },
         );
     }
@@ -166,8 +169,13 @@ impl App {
             self.panneau = None;
             return;
         };
-        let dat = self.fiches[fi].dat.clone();
         let rom = self.roms[self.fiches[fi].rom].clone();
+        // Depuis la base (les fiches de la grille peuvent dater d'avant son arrivée).
+        let dat = self
+            .base
+            .as_ref()
+            .and_then(|b| b.jeux.get(&rom.crc))
+            .map(|i| (i.plateforme, i.nom.clone()));
         if let (Some(j), Some((pl, nom))) = (&self.jaquettes, &dat) {
             for v in [Vignette::Boite, Vignette::Titre, Vignette::Capture] {
                 let k = jaquettes::cle(v, nom);
@@ -207,6 +215,16 @@ impl App {
     }
 
     /// Emplacements occupés, du plus récent au plus ancien, avec leur miniature.
+    /// Fiche ouverte relue (téléchargement fini), bouton et animation gardés.
+    pub(super) fn recharger_fiche(&mut self) {
+        let garde = self.panneau.as_ref().map(|p| (p.ouvert_a, p.bouton));
+        self.charger_fiche();
+        if let (Some(p), Some((o, b))) = (&mut self.panneau, garde) {
+            p.ouvert_a = o;
+            p.bouton = b;
+        }
+    }
+
     fn lire_etats(&self, rom: &Rom) -> Vec<EtatVu> {
         let e = Etats::new(self.chemins.etats(rom));
         let mut v: Vec<EtatVu> = std::iter::once(Cible::Auto)
@@ -273,6 +291,14 @@ impl App {
             ("Jouer".to_string(), ActFiche::Jouer),
             ("Favori".to_string(), ActFiche::Favori),
         ];
+        if let Some(t) = &self.tele {
+            let lib = if t.en_attente(self.roms[f.rom].crc) {
+                "Téléchargement…"
+            } else {
+                "Télécharger les infos"
+            };
+            v.push((lib.to_string(), ActFiche::Telecharger));
+        }
         for (c, nom) in [
             (Champ::Editeur, "Même éditeur"),
             (Champ::Genre, "Même genre"),
@@ -289,6 +315,12 @@ impl App {
         match act {
             ActFiche::Jouer => self.lancer_avec_son(),
             ActFiche::Favori => self.basculer_favori(),
+            ActFiche::Telecharger => {
+                if let Some(&fi) = self.vue.get(self.sel) {
+                    let rom = self.roms[self.fiches[fi].rom].clone();
+                    self.telecharger_un(&rom);
+                }
+            }
             ActFiche::Filtre(c) => {
                 let Some(&fi) = self.vue.get(self.sel) else {
                     return;
@@ -793,11 +825,27 @@ impl App {
         // Actions en bas ; écrans et résumé se partagent la place entre les deux.
         let hb = 44.0;
         let yb = droite.bottom() - hb;
-        let resume = ss
+        // Résumé : Wikipédia en français, sinon ScreenScraper, sinon Wikipédia en anglais.
+        let wiki = info.as_ref().filter(|i| !i.resume.is_empty()).map(|i| {
+            (
+                i.resume.clone(),
+                i.source_resume.starts_with("fr:"),
+                i.url_resume(),
+            )
+        });
+        let synopsis = ss
             .as_ref()
             .map(|s| s.synopsis.clone())
-            .filter(|s| !s.is_empty())
-            .or_else(|| ss_erreur.map(|e| format!("ScreenScraper : {e}.")));
+            .filter(|s| !s.is_empty());
+        let (resume, source) = match (wiki, synopsis) {
+            (Some((w, true, url)), _) => (Some(w), Some(("Résumé : Wikipédia, CC BY-SA", url))),
+            (_, Some(s)) => (Some(s), None),
+            (Some((w, false, url)), None) => (
+                Some(w),
+                Some(("Résumé : Wikipédia (en anglais), CC BY-SA", url)),
+            ),
+            (None, None) => (ss_erreur.map(|e| format!("ScreenScraper : {e}.")), None),
+        };
         let place = yb - 20.0 - y;
         let h_ecrans_voulu = (place * 0.62).clamp(90.0, 230.0);
         if let Some(texte) = resume {
@@ -805,7 +853,25 @@ impl App {
             let g = bloc(&pc, &texte, regulier(14.5), jt.doux, ld.min(680.0), lignes);
             let gs = g.size();
             pc.galley(Pos2::new(droite.left(), y), g, jt.doux);
-            y += gs.y + 18.0;
+            y += gs.y + 6.0;
+            if let Some((lib, url)) = source {
+                // Attribution (lien vers l'article) : exigée par la licence CC BY-SA.
+                let g = ligne(&pc, lib, regulier(12.0), jt.discret);
+                let r = Rect::from_min_size(Pos2::new(droite.left(), y), g.size());
+                let rep = ui
+                    .interact(r, Id::unique("fiche-source"), Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                let c = if rep.hovered() { jt.doux } else { jt.discret };
+                pc.galley(r.min, g, c);
+                if rep.hovered() {
+                    pc.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, c));
+                }
+                if let (true, Some(u)) = (rep.clicked(), url) {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(u));
+                }
+                y += r.height();
+            }
+            y += 12.0;
         }
         let h_ecrans = (yb - 34.0 - y).min(230.0);
         // Jeu non reconnu : aucune vignette possible, pas de cadres vides.
@@ -861,7 +927,7 @@ impl App {
                 } else {
                     Icone::EtoileVide
                 }),
-                ActFiche::Filtre(_) => None,
+                ActFiche::Filtre(_) | ActFiche::Telecharger => None,
             };
             let g = ligne(&pc, lib, moyen(14.5), jt.texte);
             let lb = g.size().x + 32.0 + if ic.is_some() { 22.0 } else { 0.0 };

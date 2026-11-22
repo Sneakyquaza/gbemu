@@ -398,15 +398,18 @@ pub struct Retour {
 pub struct ScreenScraper {
     file: Arc<(Mutex<VecDeque<Demande>>, Condvar)>,
     pub rx: Receiver<Retour>,
+    /// Cadence partagée avec le téléchargement groupé (une requête à la fois en tout).
+    pub lim: Arc<Mutex<Limiteur>>,
 }
 
 impl ScreenScraper {
     pub fn lancer(dossier: PathBuf, reveil: impl Fn() + Send + 'static) -> ScreenScraper {
         let file: Arc<(Mutex<VecDeque<Demande>>, Condvar)> = Arc::default();
+        let lim: Arc<Mutex<Limiteur>> = Arc::default();
         let (tx, rx) = channel();
-        let f = Arc::clone(&file);
-        std::thread::spawn(move || boucle(dossier, f, tx, reveil));
-        ScreenScraper { file, rx }
+        let (f, l) = (Arc::clone(&file), Arc::clone(&lim));
+        std::thread::spawn(move || boucle(dossier, f, l, tx, reveil));
+        ScreenScraper { file, rx, lim }
     }
 
     /// Demande la fiche d'un jeu ; la plus récente passe en premier, les vieilles sont oubliées.
@@ -424,11 +427,11 @@ impl ScreenScraper {
 fn boucle(
     dossier: PathBuf,
     file: Arc<(Mutex<VecDeque<Demande>>, Condvar)>,
+    lim: Arc<Mutex<Limiteur>>,
     tx: Sender<Retour>,
     reveil: impl Fn(),
 ) {
     let agent = agent();
-    let mut lim = Limiteur::default();
     loop {
         let d = {
             let (m, cv) = &*file;
@@ -443,7 +446,9 @@ fn boucle(
                 };
             }
         };
-        let r = obtenir(&agent, &dossier, &d, &mut lim, crate::sauve::hors_ligne());
+        let Ok(mut l) = lim.lock() else { return };
+        let r = obtenir(&agent, &dossier, &d, &mut l, crate::sauve::hors_ligne());
+        drop(l);
         if tx.send(r).is_err() {
             return;
         }
@@ -453,6 +458,11 @@ fn boucle(
 
 fn fichier_cache(dossier: &Path, p: Plateforme, crc: u32, ext: &str) -> PathBuf {
     dossier.join(p.court()).join(format!("{crc:08X}.{ext}"))
+}
+
+/// Oublie la réponse « jeu inconnu » d'un jeu (redemandé depuis sa fiche).
+pub fn oublier_absent(dossier: &Path, p: Plateforme, crc: u32) {
+    let _ = std::fs::remove_file(fichier_cache(dossier, p, crc, "absent"));
 }
 
 fn lire_image(chemin: &Path) -> Option<Image> {

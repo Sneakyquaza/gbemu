@@ -816,6 +816,9 @@ impl App {
             self.dessiner_filtre_meta(ui, &p, ecran.right() - MARGE, yp);
             return;
         }
+        if self.dessiner_telechargement(ui, &p, ecran.right() - MARGE, yp) {
+            return;
+        }
         let g = ligne(
             &p,
             "Glissez des jeux sur la fenêtre pour les ajouter",

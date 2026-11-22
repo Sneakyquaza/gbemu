@@ -43,6 +43,8 @@ enum Act {
     SsDevMotDePasse,
     /// Ligne d'état du client ScreenScraper (sans action).
     SsEtat,
+    NouveauxJeux,
+    MajBase,
     RetourReglages,
     Fermer,
 }
@@ -165,13 +167,28 @@ impl App {
                 ));
                 v.push((
                     "Métadonnées".into(),
-                    Some("ScreenScraper".into()),
+                    Some("Images, ScreenScraper".into()),
                     Act::Metadonnees,
                 ));
                 v.push(("Licences et à propos".into(), None, Act::Licences));
                 v.push(("Fermer".into(), None, Act::Fermer));
             }
             GenreMenu::Metadonnees => {
+                v.push((
+                    "Jeux ajoutés : infos et images".into(),
+                    Some(self.config.nouveaux_jeux.nom().into()),
+                    Act::NouveauxJeux,
+                ));
+                let n = self.base.as_ref().map_or(0, |b| b.jeux.len());
+                v.push((
+                    "Mettre à jour la base (libretro)".into(),
+                    Some(if self.maj_base {
+                        "En cours…".to_string()
+                    } else {
+                        format!("{n} jeux connus")
+                    }),
+                    Act::MajBase,
+                ));
                 let s = &self.ss_saisis;
                 let texte = |t: &str| {
                     Some(if t.trim().is_empty() {
@@ -340,6 +357,26 @@ impl App {
                 }
             }
             Act::SsEtat => {}
+            Act::NouveauxJeux => {
+                self.config.nouveaux_jeux = self.config.nouveaux_jeux.suivant();
+                self.config.enregistrer(&self.chemins.config());
+            }
+            Act::MajBase => {
+                if self.config.hors_ligne {
+                    self.dire("Mode hors ligne : mise à jour impossible");
+                } else if !self.maj_base && !self.opts.demo {
+                    self.maj_base = true;
+                    let (tx, rx) = channel();
+                    let dossier = self.chemins.dat();
+                    let r = reveil(&self.ctx);
+                    std::thread::spawn(move || {
+                        let _ = tx.send(dat::charger(&dossier, true));
+                        r();
+                    });
+                    self.rx_base = Some(rx);
+                    self.dire("Mise à jour des métadonnées…");
+                }
+            }
             Act::Touches => {
                 let genre = self.menu.take().map(|m| m.genre);
                 self.ouvrir_touches(genre);
@@ -362,6 +399,9 @@ impl App {
         }
         self.ss_id = Identifiants::charger(&self.chemins.donnees);
         self.ss_fiches.retain(|_, r| r.is_ok());
+        if let Some(t) = &self.tele {
+            t.identifiants(self.ss_id.clone());
+        }
     }
 
     fn choisir_dossier(&mut self, d: PathBuf) {
@@ -549,7 +589,7 @@ impl App {
         let (titre, sous) = if genre == GenreMenu::Metadonnees {
             (
                 "Métadonnées".to_string(),
-                "Résumés, notes et logos ScreenScraper. Identifiants gardés sur ce PC, envoyés seulement à screenscraper.fr.".to_string(),
+                "Fiches et résumés intégrés (libretro, Wikipédia). Images et ScreenScraper en ligne ; identifiants gardés sur ce PC, envoyés seulement à screenscraper.fr.".to_string(),
             )
         } else {
             (
@@ -805,6 +845,7 @@ impl Act {
                 | Act::SonsUi
                 | Act::Intro
                 | Act::HorsLigne
+                | Act::NouveauxJeux
         )
     }
 

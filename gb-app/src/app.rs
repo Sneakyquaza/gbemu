@@ -11,6 +11,7 @@ use crate::jeu::Partie;
 use crate::manette::{b, Etat, Manettes};
 use crate::sauve::{Chemins, Config, Palette};
 use crate::screenscraper::{FicheSs, Identifiants, ScreenScraper};
+use crate::telechargement::Telechargeur;
 use crate::touches::{Action, Clavier, Touches};
 use eframe::egui::{
     self, Color32, ColorImage, CornerRadius, Event, Id, Key, Pos2, Rect, Sense, Stroke, StrokeKind,
@@ -27,6 +28,8 @@ use std::time::Instant;
 mod ecran_biblio;
 #[path = "ecran_fiche.rs"]
 mod ecran_fiche;
+#[path = "ecran_import.rs"]
+mod ecran_import;
 #[path = "ecran_jeu.rs"]
 mod ecran_jeu;
 #[path = "ecran_touches.rs"]
@@ -117,6 +120,14 @@ pub struct App {
     ss_id: Identifiants,
     /// Réponses ScreenScraper reçues pendant la session, par CRC.
     ss_fiches: HashMap<u32, Result<FicheSs, String>>,
+    /// Téléchargement groupé des infos et images (jeux ajoutés, bouton de la fiche).
+    tele: Option<Telechargeur>,
+    /// CRC des jeux apparus à la dernière analyse, en attente de la base pour être proposés.
+    nouveaux: Vec<u32>,
+    /// « Télécharger les infos et images de N jeux ? » affiché.
+    proposition: Option<ecran_import::Proposition>,
+    /// Mise à jour en ligne de la base demandée (message à son arrivée).
+    maj_base: bool,
 
     partie: Option<Partie>,
     debut_partie: f64,
@@ -295,6 +306,10 @@ impl App {
             ss_saisis: Identifiants::default(),
             ss_id: Identifiants::default(),
             ss_fiches: HashMap::new(),
+            tele: None,
+            nouveaux: Vec::new(),
+            proposition: None,
+            maj_base: false,
             partie: None,
             debut_partie: 0.0,
             tex_ecran: None,
@@ -327,23 +342,31 @@ impl App {
         let (tx, rx) = channel();
         let dossier_dat = app.chemins.dat();
         let r = reveil(&ctx);
-        // Les noms d'abord (cartes lisibles au plus vite), le reste des métadonnées ensuite.
+        // Base intégrée + DAT déjà téléchargés (aucun réseau au lancement).
         std::thread::spawn(move || {
-            let mut base = dat::charger(&dossier_dat);
-            let _ = tx.send(base.clone());
-            r();
-            dat::completer(&dossier_dat, &mut base);
-            let _ = tx.send(base);
+            let _ = tx.send(dat::charger(&dossier_dat, false));
             r();
         });
         app.rx_base = Some(rx);
         app.jaquettes = Some(Jaquettes::lancer(app.chemins.jaquettes(), reveil(&ctx)));
         app.ss_saisis = Identifiants::saisis(&app.chemins.donnees);
         app.ss_id = Identifiants::charger(&app.chemins.donnees);
-        app.ss = Some(ScreenScraper::lancer(
-            app.chemins.cache.join("screenscraper"),
-            reveil(&ctx),
-        ));
+        let ss = ScreenScraper::lancer(app.chemins.cache.join("screenscraper"), reveil(&ctx));
+        if !app.opts.demo {
+            let t = Telechargeur::lancer(
+                crate::telechargement::Dossiers {
+                    file: app.chemins.cache.join("telechargements.json"),
+                    jaquettes: app.chemins.jaquettes(),
+                    screenscraper: app.chemins.cache.join("screenscraper"),
+                },
+                std::sync::Arc::clone(&ss.lim),
+                crate::sauve::hors_ligne,
+                reveil(&ctx),
+            );
+            t.identifiants(app.ss_id.clone());
+            app.tele = Some(t);
+        }
+        app.ss = Some(ss);
 
         if let Some(chemin) = app.opts.rom.clone() {
             // `--rom` / « Ouvrir avec » : même analyse que la bibliothèque (64 Mio au plus,
@@ -425,6 +448,11 @@ impl App {
                             self.t_analyse.elapsed().as_millis()
                         );
                         if r != self.roms {
+                            if self.tele.is_some()
+                                && self.config.nouveaux_jeux != crate::sauve::NouveauxJeux::Jamais
+                            {
+                                self.nouveaux.extend(ecran_import::nouveaux(&self.roms, &r));
+                            }
                             self.roms = r;
                             self.vue_sale = true;
                         }
@@ -434,6 +462,7 @@ impl App {
                 }
             }
         }
+        let (mut maj, mut recue) = (false, false);
         if let Some(rx) = &self.rx_base {
             loop {
                 match rx.try_recv() {
@@ -443,6 +472,8 @@ impl App {
                             self.base = Some(base);
                             self.vue_sale = true;
                         }
+                        maj |= std::mem::take(&mut self.maj_base);
+                        recue = true;
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -451,6 +482,12 @@ impl App {
                     }
                 }
             }
+        }
+        if maj {
+            self.dire("Métadonnées mises à jour");
+        }
+        if recue && self.panneau.is_some() {
+            self.recharger_fiche();
         }
         if let Some(j) = &self.jaquettes {
             while let Ok((nom, img)) = j.rx.try_recv() {
@@ -475,6 +512,7 @@ impl App {
             }
         }
         self.recevoir_ss();
+        self.recevoir_telechargements();
     }
 
     fn reconstruire(&mut self) {
@@ -698,9 +736,18 @@ impl App {
             self.ouvrir_menu(GenreMenu::Pause);
             self.images_menu = self.images_ui;
         }
+        // Jeux ajoutés : « import » capture la question, « import-oui » y répond Oui.
+        if self.opts.menu.as_deref() == Some("import-oui") && self.proposition.is_some() {
+            self.opts.menu = None;
+            self.repondre_proposition_oui();
+        }
         let pret = self.images_ui >= self.opts.images
             && self.analyse_finie
-            && !matches!(self.opts.menu.as_deref(), Some("pause" | "fiche"))
+            && !matches!(
+                self.opts.menu.as_deref(),
+                Some("pause" | "fiche" | "import-oui")
+            )
+            && (self.opts.menu.as_deref() != Some("import") || self.proposition.is_some())
             && (jeu_pret || self.menu.is_some())
             && self.images_ui >= self.images_menu + 15;
         if pret && !self.capture_demandee {
@@ -807,6 +854,9 @@ impl eframe::App for App {
             false
         } else if self.partie.is_some() {
             self.entrees_jeu(ui, pad, maintenant)
+        } else if self.proposition.is_some() {
+            self.entrees_proposition(&evts, pad);
+            false
         } else if self.panneau.is_some() {
             self.entrees_fiche(&evts, pad);
             false
@@ -827,6 +877,9 @@ impl eframe::App for App {
             self.dessiner_biblio(ui, dt);
             if self.panneau.is_some() {
                 self.dessiner_fiche(ui);
+            }
+            if self.proposition.is_some() {
+                self.dessiner_proposition(ui);
             }
         }
         if self.menu.is_some() {
