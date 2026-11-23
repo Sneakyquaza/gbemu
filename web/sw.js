@@ -47,6 +47,11 @@ self.addEventListener("activate", (e) => {
   );
 });
 
+// Version demandée par la page (Réglages > Mise à jour), réponse sur le port fourni.
+self.addEventListener("message", (e) => {
+  if (e.data === "version" && e.ports[0]) e.ports[0].postMessage(VERSION);
+});
+
 // Cache d'abord (hors ligne), réseau en secours.
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET" || new URL(e.request.url).origin !== location.origin) return;

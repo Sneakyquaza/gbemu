@@ -43,6 +43,13 @@
     </div>
   </aside>
 
+  <aside id="maj" class="astuce" role="status" hidden>
+    <p>Nouvelle version de gbemu disponible.</p>
+    <div class="astuce-actions">
+      <button id="b-maj" class="bouton" type="button">Mettre à jour</button>
+    </div>
+  </aside>
+
   <div class="outils">
     <input id="recherche" class="champ" type="search" placeholder="Rechercher" autocomplete="off" enterkeyhint="search" aria-label="Rechercher un jeu">
     <button id="b-ajouter" class="bouton principal" type="button">Ajouter des jeux</button>
@@ -138,6 +145,21 @@
         <input id="f-sav" class="cache" type="file" multiple tabindex="-1" aria-hidden="true">
       </div>
       <p id="r-message" class="sous" role="status"></p>
+    </section>
+    <section class="groupe">
+      <h3>Installer l'appli</h3>
+      <p id="r-installer-texte" class="sous"></p>
+      <div id="r-installer-menu" class="menu" hidden>
+        <button id="r-installer" class="bouton" type="button">Installer</button>
+      </div>
+    </section>
+    <section class="groupe">
+      <h3>Mise à jour</h3>
+      <div class="ligne"><span>Version</span><span id="r-version" class="sous">…</span></div>
+      <div class="menu">
+        <button id="r-maj" class="bouton" type="button">Mettre à jour</button>
+      </div>
+      <p id="r-maj-message" class="sous" role="status"></p>
     </section>
     <section class="groupe">
       <h3>Appareil</h3>

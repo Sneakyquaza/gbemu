@@ -355,15 +355,35 @@ function basculerPleinEcran() {
 $("b-plein-ecran").hidden = !pleinEcranPossible();
 $("b-plein-ecran").addEventListener("click", basculerPleinEcran);
 
+// Aide à l'installation : section permanente des Réglages + bandeau sur tactile (masquable).
+function majInstallation() {
+  const ua = navigator.userAgent;
+  $("r-installer-menu").hidden = installe() || !invite;
+  $("r-installer-texte").textContent = installe()
+    ? "Appli installée : elle s'ouvre depuis l'écran d'accueil ou la liste des applications, même hors ligne."
+    : invite
+      ? "Installe gbemu pour l'ouvrir comme une appli, en plein écran, même hors ligne."
+      : ios
+        ? "Dans Safari : touche Partager, puis « Sur l'écran d'accueil »."
+        : /Android/.test(ua)
+          ? "Menu ⋮ du navigateur, puis « Installer l'application » ou « Ajouter à l'écran d'accueil »."
+          : /Firefox\//.test(ua)
+            ? "Firefox sur ordinateur n'installe pas les applis web : ouvre ce site dans Chrome ou Edge pour l'installer. Il marche aussi ici, hors ligne compris."
+            : /Macintosh/.test(ua) && /Safari\//.test(ua) && !/Chrome|Chromium|Edg\//.test(ua)
+              ? "Dans Safari : menu Fichier, puis « Ajouter au Dock »."
+              : "Dans Chrome ou Edge : icône d'installation à droite de la barre d'adresse, ou menu du navigateur puis « Installer gbemu »."
+}
+
 function majAstuce() {
+  majInstallation();
   const a = $("astuce");
   if (installe() || reglages.astuce || !tactile) {
     a.hidden = true;
     return;
   }
   $("astuce-texte").textContent = ios
-    ? "Pour jouer en plein écran, sans la barre de Safari : touche Partager, puis « Sur l'écran d'accueil »."
-    : "Pour jouer en plein écran, sans la barre du navigateur : installe l'appli, ou menu ⋮ puis « Ajouter à l'écran d'accueil ».";
+    ? "Pour jouer en plein écran, sans la barre de Safari : touche Partager, puis « Sur l'écran d'accueil »."
+    : "Pour jouer en plein écran, sans la barre du navigateur : installe l'appli, ou menu ⋮ puis « Ajouter à l'écran d'accueil ».";
   $("b-installer").hidden = !invite;
   a.hidden = false;
 }
@@ -372,13 +392,19 @@ window.addEventListener("beforeinstallprompt", (e) => {
   invite = e;
   majAstuce();
 });
-$("b-installer").addEventListener("click", async () => {
+window.addEventListener("appinstalled", () => {
+  invite = null;
+  majAstuce();
+});
+async function installer() {
   if (!invite) return;
   invite.prompt();
   await invite.userChoice.catch(() => {});
   invite = null;
   majAstuce();
-});
+}
+$("b-installer").addEventListener("click", installer);
+$("r-installer").addEventListener("click", installer);
 $("b-astuce-fermer").addEventListener("click", () => {
   reglages.astuce = true;
   garderReglages();
@@ -721,6 +747,7 @@ $("b-reglages").addEventListener("click", async () => {
   $("r-coupe").checked = reglages.coupe;
   $("r-vitesse").value = reglages.vitesse;
   $("r-message").textContent = "";
+  $("r-maj-message").textContent = "";
   $("r-espace").textContent = "Tes jeux et sauvegardes restent sur cet appareil.";
   ouvrirVoile($("reglages"));
   try {
@@ -839,9 +866,92 @@ document.addEventListener("keydown", (e) => {
   for (const id of ["confirmer", "reglages"]) if (!$(id).hidden) $(id).hidden = true;
 });
 
+// ---------- Mise à jour (service worker) ----------
+
+// Le service worker installe chaque nouvelle version tout seul (skipWaiting) mais la page garde
+// l'ancien code : on propose de recharger, jamais de recharger sans geste du joueur.
+let version = "";
+let nouvelleVersion = false;
+let demandeMaj = false;
+const sw = "serviceWorker" in navigator ? navigator.serviceWorker : null;
+let controle = !!(sw && sw.controller);
+
+function demanderVersion(travailleur) {
+  if (!travailleur) return;
+  const canal = new MessageChannel();
+  canal.port1.onmessage = (e) => {
+    if (!version) version = e.data;
+    $("r-version").textContent = version;
+  };
+  travailleur.postMessage("version", [canal.port2]);
+}
+
+function majMiseAJour() {
+  $("maj").hidden = !nouvelleVersion;
+  if (!version) $("r-version").textContent = sw ? "…" : "inconnue";
+}
+
+// Sauvegarde batterie d'abord (si une partie tourne), puis rechargement.
+function recharger() {
+  Promise.resolve(sauverBatterie()).finally(() => location.reload());
+}
+
+async function chercherMaj() {
+  const msg = $("r-maj-message");
+  if (nouvelleVersion) return recharger();
+  const reg = sw && (await sw.getRegistration().catch(() => null));
+  if (!reg) {
+    msg.textContent = "Mise à jour impossible : le navigateur n'a pas activé le mode hors ligne pour ce site.";
+    return;
+  }
+  if (!navigator.onLine) {
+    msg.textContent = "Hors ligne : reconnecte-toi pour chercher une mise à jour.";
+    return;
+  }
+  msg.textContent = "Recherche d'une mise à jour…";
+  demandeMaj = true;
+  try {
+    await reg.update();
+  } catch {
+    demandeMaj = false;
+    msg.textContent = "Serveur injoignable : vérifie la connexion puis réessaie.";
+    return;
+  }
+  const nouveau = reg.installing || reg.waiting;
+  if (!nouveau) {
+    demandeMaj = false;
+    msg.textContent = "Déjà à jour.";
+    return;
+  }
+  msg.textContent = "Nouvelle version trouvée, téléchargement…";
+  nouveau.addEventListener("statechange", () => {
+    if (nouveau.state !== "redundant") return;
+    demandeMaj = false;
+    msg.textContent = "Téléchargement de la nouvelle version interrompu : réessaie.";
+  });
+}
+$("r-maj").addEventListener("click", chercherMaj);
+$("b-maj").addEventListener("click", recharger);
+
+if (sw) {
+  // Nouveau contrôleur : première installation (rien à faire) ou nouvelle version active.
+  sw.addEventListener("controllerchange", () => {
+    if (!controle) {
+      controle = true;
+      return demanderVersion(sw.controller);
+    }
+    nouvelleVersion = true;
+    if (demandeMaj) recharger();
+    else majMiseAJour();
+  });
+  demanderVersion(sw.controller);
+  sw.register("sw.js").catch(() => {});
+}
+
 // ---------- Démarrage ----------
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+majMiseAJour();
+
 pret.catch((e) => toast("Le moteur de l'émulateur n'a pas pu se charger : " + e.message));
 chargerBiblio();
 
