@@ -13,6 +13,9 @@ use std::sync::{Arc, Condvar, Mutex};
 /// Âge (jours) au-delà duquel une jaquette notée absente est redemandée.
 const JOURS_ABSENT: u64 = 30;
 
+/// Taille maximale d'une vignette reçue (au-delà : refusée, jamais gardée tronquée).
+const TAILLE_MAX: usize = 8 << 20;
+
 /// Côté maximal d'une jaquette décodée (en pixels).
 const COTE_MAX: usize = 384;
 
@@ -161,13 +164,19 @@ enum Reponse {
     Lien(String),
     Introuvable,
     Refus,
+    /// 429 ou 5xx : serveur limité ou en panne, à redemander plus tard.
+    PlusTard,
 }
 
 fn demander(agent: &ureq::Agent, url: &str) -> Result<Reponse, ()> {
     match agent.get(url).call() {
         Ok(rep) => {
             let mut d = Vec::new();
-            if rep.into_reader().take(8 << 20).read_to_end(&mut d).is_err() {
+            let lu = rep
+                .into_reader()
+                .take(TAILLE_MAX as u64 + 1)
+                .read_to_end(&mut d);
+            if lu.is_err() || d.len() > TAILLE_MAX {
                 return Ok(Reponse::Refus);
             }
             if d.starts_with(b"\x89PNG") {
@@ -181,13 +190,15 @@ fn demander(agent: &ureq::Agent, url: &str) -> Result<Reponse, ()> {
             })
         }
         Err(ureq::Error::Status(404, _)) => Ok(Reponse::Introuvable),
+        Err(ureq::Error::Status(429 | 500..=599, _)) => Ok(Reponse::PlusTard),
         Err(ureq::Error::Status(..)) => Ok(Reponse::Refus),
         Err(_) => Err(()),
     }
 }
 
-/// Télécharge la vignette dans le cache : `Ok(Some)` PNG reçu et gardé, `Ok(None)` inexistante
-/// (marquée absente) ou refusée, `Err` serveurs injoignables (réseau coupé).
+/// Télécharge la vignette dans le cache : `Ok(Some)` PNG reçu, décodable et gardé, `Ok(None)`
+/// inexistante (marquée absente) ou refusée, `Err` serveurs injoignables (réseau coupé) ou
+/// limités (429, 5xx).
 /// Dépôt libretro-thumbnails sur GitHub d'abord (thumbnails.libretro.com vide le 22/11/2026),
 /// le serveur libretro ensuite.
 fn telecharger(
@@ -197,7 +208,7 @@ fn telecharger(
     v: Vignette,
     local: &Path,
     absent: &Path,
-) -> Result<Option<Vec<u8>>, ()> {
+) -> Result<Option<Image>, ()> {
     let fichier = encoder_url(&nom_fichier(nom));
     let depot = format!(
         "https://raw.githubusercontent.com/libretro-thumbnails/{}/master/{}/",
@@ -209,9 +220,25 @@ fn telecharger(
         encoder_url(systeme(p)),
         v.dossier_distant()
     );
+    telecharger_depuis(agent, &[depot, serveur], &fichier, local, absent)
+}
+
+/// [`telecharger`] depuis ces serveurs, dans l'ordre.
+fn telecharger_depuis(
+    agent: &ureq::Agent,
+    bases: &[String],
+    fichier: &str,
+    local: &Path,
+    absent: &Path,
+) -> Result<Option<Image>, ()> {
     let mut injoignable = true;
     let mut introuvable = true;
-    for base in [&depot, &serveur] {
+    let mut plus_tard = false;
+    for base in bases {
+        // Déjà reçue par l'autre fil (grille et lot en même temps) : pas de 2e requête.
+        if local.exists() {
+            return Ok(std::fs::read(local).ok().and_then(|d| decoder(&d)));
+        }
         let mut rep = demander(agent, &format!("{base}{fichier}.png"));
         if let Ok(Reponse::Lien(cible)) = &rep {
             let cible = cible.rsplit('/').next().unwrap_or(cible);
@@ -219,10 +246,20 @@ fn telecharger(
         }
         match rep {
             Ok(Reponse::Png(d)) => {
-                let _ = crate::sauve::ecrire_atomique(local, &d);
-                return Ok(Some(d));
+                // Indécodable (abîmé, trop grand) : jamais gardé, redemandé plus tard.
+                if let Some(img) = decoder(&d) {
+                    let _ = crate::sauve::ecrire_cache(local, &d);
+                    return Ok(Some(img));
+                }
+                injoignable = false;
+                introuvable = false;
             }
             Ok(Reponse::Introuvable) => injoignable = false,
+            Ok(Reponse::PlusTard) => {
+                injoignable = false;
+                introuvable = false;
+                plus_tard = true;
+            }
             Ok(_) => {
                 injoignable = false;
                 introuvable = false;
@@ -230,12 +267,12 @@ fn telecharger(
             Err(()) => introuvable = false,
         }
     }
-    if injoignable {
+    if injoignable || plus_tard {
         return Err(());
     }
     // Introuvable partout : on le note pour ne plus la redemander.
     if introuvable {
-        let _ = crate::sauve::ecrire_atomique(absent, MARQUE_ABSENT);
+        let _ = crate::sauve::ecrire_cache(absent, MARQUE_ABSENT);
     }
     Ok(None)
 }
@@ -251,12 +288,18 @@ fn obtenir(
 ) -> Option<Image> {
     let (local, absent) = chemins_cache(dossier, p, nom, v);
     if let Ok(d) = std::fs::read(&local) {
-        return decoder(&d);
+        match decoder(&d) {
+            Some(img) => return Some(img),
+            // Fichier abîmé (versions d'avant) : retiré, la vignette est redemandée.
+            None => {
+                let _ = std::fs::remove_file(&local);
+            }
+        }
     }
     if hors_ligne || absent_recent(&absent) {
         return None;
     }
-    decoder(&telecharger(agent, p, nom, v, &local, &absent).ok()??)
+    telecharger(agent, p, nom, v, &local, &absent).ok()?
 }
 
 /// Vrai si la vignette reste à demander (ni en cache, ni notée absente récemment).
@@ -265,8 +308,8 @@ pub fn manquante(dossier: &Path, p: Plateforme, nom: &str, v: Vignette) -> bool 
     !local.exists() && !absent_recent(&absent)
 }
 
-/// Met la vignette en cache sans la décoder (téléchargement groupé). `force` : redemandée même
-/// notée absente. `Ok(true)` si une requête a été faite, `Err` serveur injoignable.
+/// Met la vignette en cache (téléchargement groupé ; décodée pour vérification seulement). `force` : redemandée même
+/// notée absente. `Ok(true)` si une requête a été faite, `Err` serveur injoignable ou limité.
 pub fn precharger(
     agent: &ureq::Agent,
     dossier: &Path,
@@ -379,6 +422,96 @@ mod tests {
             "Jeu (Europe)",
             Vignette::Titre
         ));
+    }
+
+    /// Faux serveur local : une réponse HTTP brute par connexion, dans l'ordre. Renvoie l'URL
+    /// de base et le compteur de requêtes reçues.
+    fn faux_serveur(reponses: Vec<Vec<u8>>) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::Write;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/", l.local_addr().unwrap());
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let compte = Arc::clone(&n);
+        std::thread::spawn(move || {
+            for r in reponses {
+                let Ok((mut c, _)) = l.accept() else { return };
+                compte.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut tampon = [0u8; 4096];
+                let _ = c.read(&mut tampon);
+                let _ = c.write_all(&r);
+            }
+        });
+        (base, n)
+    }
+
+    fn http(statut: &str, corps: &[u8]) -> Vec<u8> {
+        let mut r = format!(
+            "HTTP/1.1 {statut}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            corps.len()
+        )
+        .into_bytes();
+        r.extend_from_slice(corps);
+        r
+    }
+
+    fn agent_local() -> ureq::Agent {
+        ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+    }
+
+    #[test]
+    fn limite_et_panne_reessayables_sans_marqueur() {
+        let d = crate::sauve::DossierTest::new("limite");
+        let (local, absent) = chemins_cache(&d.0, Plateforme::Gb, "J", Vignette::Boite);
+        for statut in ["429 Too Many Requests", "503 Service Unavailable"] {
+            let (a, _) = faux_serveur(vec![http(statut, b"")]);
+            let (b, _) = faux_serveur(vec![http("404 Not Found", b"")]);
+            let r = telecharger_depuis(&agent_local(), &[a, b], "J", &local, &absent);
+            assert!(r.is_err(), "{statut}");
+            assert!(!absent.exists() && !local.exists());
+        }
+        // Introuvable partout : marqué absent.
+        let (a, _) = faux_serveur(vec![http("404 Not Found", b"")]);
+        let r = telecharger_depuis(&agent_local(), &[a], "J", &local, &absent);
+        assert!(matches!(r, Ok(None)) && absent_recent(&absent));
+    }
+
+    #[test]
+    fn reponse_trop_grande_ou_indecodable_jamais_gardee() {
+        let d = crate::sauve::DossierTest::new("abimee");
+        let (local, absent) = chemins_cache(&d.0, Plateforme::Gb, "J", Vignette::Boite);
+        let mut gros = b"\x89PNG".to_vec();
+        gros.resize(TAILLE_MAX + 1, 0);
+        let (a, _) = faux_serveur(vec![http("200 OK", &gros)]);
+        let (b, _) = faux_serveur(vec![http("200 OK", b"\x89PNG abime")]);
+        let r = telecharger_depuis(&agent_local(), &[a, b], "J", &local, &absent);
+        assert!(matches!(r, Ok(None)));
+        // Ni image ni marqueur : redemandée la fois suivante.
+        assert!(!local.exists() && !absent.exists());
+        assert!(manquante(&d.0, Plateforme::Gb, "J", Vignette::Boite));
+        // PNG valide : gardé, sans `.bak`.
+        let png = crate::etats::encoder_png(&[1, 2, 3], 1, 1).unwrap();
+        let (a, _) = faux_serveur(vec![http("200 OK", &png)]);
+        let r = telecharger_depuis(&agent_local(), &[a], "J", &local, &absent);
+        assert!(matches!(r, Ok(Some(_))));
+        assert_eq!(std::fs::read(&local).unwrap(), png);
+        assert!(!local.with_extension("bak").exists());
+        // Déjà en cache (reçue par l'autre fil) : aucune requête.
+        let (a, n) = faux_serveur(vec![http("200 OK", &png)]);
+        let r = telecharger_depuis(&agent_local(), &[a], "J", &local, &absent);
+        assert!(matches!(r, Ok(Some(_))));
+        assert_eq!(n.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn fichier_abime_du_cache_retire() {
+        let d = crate::sauve::DossierTest::new("cache_abime");
+        let (local, _) = chemins_cache(&d.0, Plateforme::Gb, "J", Vignette::Boite);
+        crate::sauve::ecrire_atomique(&local, b"\x89PNG tronque").unwrap();
+        assert!(obtenir(&agent(), &d.0, Plateforme::Gb, "J", Vignette::Boite, true).is_none());
+        assert!(!local.exists());
+        assert!(manquante(&d.0, Plateforme::Gb, "J", Vignette::Boite));
     }
 
     #[test]

@@ -563,22 +563,7 @@ pub fn echec_ecriture() -> bool {
 /// Remplacement refusé (antivirus, indexeur, OneDrive…) : 5 réessais, puis réécriture directe ;
 /// en dernier recours le `.tmp` complet reste et [`lire`] le reprend.
 pub fn ecrire_atomique(chemin: &Path, donnees: &[u8]) -> io::Result<()> {
-    static COMPTEUR: AtomicU32 = AtomicU32::new(0);
-    if let Some(p) = chemin.parent() {
-        std::fs::create_dir_all(p)?;
-    }
-    let mut nom = chemin.file_name().unwrap_or_default().to_os_string();
-    nom.push(format!(
-        ".{}-{}.tmp",
-        std::process::id(),
-        COMPTEUR.fetch_add(1, Ordering::Relaxed)
-    ));
-    let tmp = chemin.with_file_name(nom);
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(donnees)?;
-        f.sync_all()?;
-    }
+    let tmp = ecrire_temporaire(chemin, donnees)?;
     if chemin.exists() {
         // Copie et non renommage : le fichier principal reste en place jusqu'au remplacement.
         let _ = std::fs::copy(chemin, chemin.with_extension("bak"));
@@ -602,6 +587,41 @@ pub fn ecrire_atomique(chemin: &Path, donnees: &[u8]) -> io::Result<()> {
             let _ = std::fs::remove_file(&tmp);
             return direct;
         }
+    }
+    r
+}
+
+/// Fichier temporaire (nom unique) complet et synchronisé à côté de `chemin`.
+fn ecrire_temporaire(chemin: &Path, donnees: &[u8]) -> io::Result<PathBuf> {
+    static COMPTEUR: AtomicU32 = AtomicU32::new(0);
+    if let Some(p) = chemin.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    let mut nom = chemin.file_name().unwrap_or_default().to_os_string();
+    nom.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        COMPTEUR.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp = chemin.with_file_name(nom);
+    let r = std::fs::File::create(&tmp).and_then(|mut f| {
+        f.write_all(donnees)?;
+        f.sync_all()
+    });
+    if let Err(e) = r {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(tmp)
+}
+
+/// Écriture atomique d'un fichier du cache (recréable) : temporaire synchronisé puis renommé,
+/// sans copie `.bak` ni réessai. Échec : l'ancienne version reste, aucun temporaire ne traîne.
+pub fn ecrire_cache(chemin: &Path, donnees: &[u8]) -> io::Result<()> {
+    let tmp = ecrire_temporaire(chemin, donnees)?;
+    let r = refuse_en_test().and_then(|()| std::fs::rename(&tmp, chemin));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
     r
 }
@@ -810,6 +830,22 @@ mod tests {
         assert_eq!(lire(&f).unwrap(), b"deux");
         assert_eq!(std::fs::read(f.with_extension("bak")).unwrap(), b"un");
         assert_eq!(restes_tmp(&d.0), 0);
+    }
+
+    #[test]
+    fn ecriture_du_cache_sans_bak() {
+        let d = DossierTest::new("cache");
+        let f = d.0.join("sous").join("x.json");
+        ecrire_cache(&f, b"un").unwrap();
+        ecrire_cache(&f, b"deux").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"deux");
+        ECHEC_REMPLACEMENT.with(|e| e.set(true));
+        assert!(ecrire_cache(&f, b"trois").is_err());
+        ECHEC_REMPLACEMENT.with(|e| e.set(false));
+        // Remplacement refusé : l'ancienne version reste, aucun `.tmp` ni `.bak`.
+        assert_eq!(std::fs::read(&f).unwrap(), b"deux");
+        assert!(!f.with_extension("bak").exists());
+        assert_eq!(restes_tmp(&d.0.join("sous")), 0);
     }
 
     #[test]
