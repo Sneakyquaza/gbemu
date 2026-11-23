@@ -55,6 +55,10 @@ pub struct Options {
     pub grille: bool,
     /// Robot de test (`--robot`) : ni manette réelle, ni carte son, ni programme externe.
     pub robot: bool,
+    /// `--maj-url` : annonce de version lue ailleurs que sur le site (essais en local).
+    pub maj_url: Option<String>,
+    /// `--maj-auto` (essais) : version plus récente téléchargée et installée sans clic.
+    pub maj_auto: bool,
 }
 
 /// Ce qu'affiche une carte (titre, détails, clé de recherche), recalculé quand la base arrive.
@@ -153,6 +157,7 @@ pub struct App {
     clavier: Clavier,
     ecran_touches: Option<ecran_touches::EcranTouches>,
     hud: ecran_jeu::Hud,
+    maj: crate::maj::Maj,
 }
 
 /// Couche superposée (menu, fiche…) : les clics et glissers ne passent plus aux éléments
@@ -295,6 +300,7 @@ impl App {
         d::reduire_mouvement(config.animations_reduites);
         let hab = ecran_biblio::Habillage::new(&opts, &chemins, &config);
 
+        let opts_maj_url = opts.maj_url.clone();
         let mut app = App {
             recherche: opts.recherche.clone().unwrap_or_default(),
             recherche_active: false,
@@ -353,6 +359,7 @@ impl App {
             clavier: Clavier::default(),
             ecran_touches: None,
             hud: Default::default(),
+            maj: crate::maj::Maj::new(opts_maj_url, reveil(&ctx)),
         };
 
         if app.opts.demo {
@@ -391,6 +398,17 @@ impl App {
             app.tele = Some(t);
         }
         app.ss = Some(ss);
+        // Mise à jour cherchée en fond au lancement (silencieuse hors ligne) ; pas pendant les
+        // captures de vérification, sauf avec une annonce locale (`--maj-url`).
+        let capture_fixe = app.opts.capture.is_some() && app.opts.maj_url.is_none();
+        if !app.opts.demo
+            && !app.opts.robot
+            && !capture_fixe
+            && !app.config.hors_ligne
+            && !app.config.sans_maj_auto
+        {
+            app.maj.chercher(true);
+        }
 
         if let Some(chemin) = app.opts.rom.clone() {
             // `--rom` / « Ouvrir avec » : même analyse que la bibliothèque (64 Mio au plus,
@@ -901,6 +919,25 @@ impl App {
         crate::sauve::attendre_ecritures();
     }
 
+    /// Mise à jour : `--maj-auto` télécharge dès qu'une version est annoncée ; nouvelle version
+    /// prête et aucune partie en cours : sauvegarde comme à la fermeture, échange, relance.
+    fn suivre_maj(&mut self, ctx: &egui::Context) {
+        if self.opts.maj_auto && matches!(self.maj.etat(), crate::maj::Etat::Dispo(_)) {
+            self.maj.telecharger();
+        }
+        if self.partie.is_some() {
+            return;
+        }
+        let Some(nouveau) = self.maj.prendre_pret() else {
+            return;
+        };
+        self.fermer();
+        match self.maj.installer(&nouveau) {
+            Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
+            Err(m) => self.dire(m),
+        }
+    }
+
     /// Une image d'interface (entrées, émulation, dessin).
     pub fn image(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -942,6 +979,7 @@ impl App {
 
         self.recevoir();
         self.reconstruire();
+        self.suivre_maj(&ctx);
 
         let pad = self
             .manettes

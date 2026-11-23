@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "gb-app"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "cpal",
  "crc32fast",
@@ -844,6 +844,7 @@ dependencies = [
  "gilrs",
  "png 0.17.16",
  "rfd",
+ "ring",
  "serde",
  "serde_json",
  "sevenz-rust2",
@@ -853,11 +854,11 @@ dependencies = [
 
 [[package]]
 name = "gb-core"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "gb-headless"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "gb-core",
  "png 0.17.16",
@@ -865,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "gb-web"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "crc32fast",
  "gb-core",
@@ -876,14 +877,14 @@ dependencies = [
 
 [[package]]
 name = "gba-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "gb-core",
 ]
 
 [[package]]
 name = "gba-headless"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "gb-headless",
  "gba-core",

@@ -813,6 +813,9 @@ impl App {
         let occupe = if let Some(g) = self.dessiner_filtre_meta(ui, &p, limite, yp) {
             limite = g - 22.0;
             true
+        } else if let Some(g) = self.dessiner_maj(ui, &p, limite, yp) {
+            limite = g - 22.0;
+            true
         } else if let Some(g) = self.dessiner_telechargement(ui, &p, limite, yp) {
             limite = g - 22.0;
             true
@@ -843,6 +846,76 @@ impl App {
                 jt.discret,
             );
         }
+    }
+
+    /// Nouvelle version annoncée, dans le pied : pastille cliquable « Mettre à jour », puis
+    /// progression du téléchargement. Rend le bord gauche de la pastille.
+    fn dessiner_maj(
+        &mut self,
+        ui: &egui::Ui,
+        p: &egui::Painter,
+        droite: f32,
+        y: f32,
+    ) -> Option<f32> {
+        use crate::maj::Etat;
+        let jt = j();
+        let (texte, progres) = match self.maj.etat() {
+            Etat::Dispo(a) => (
+                format!("Nouvelle version {} disponible — Mettre à jour", a.version),
+                None,
+            ),
+            Etat::Telechargement(v, f, t) => (
+                format!("Version {v} : téléchargement"),
+                Some((f as f32 / t.max(1) as f32).clamp(0.0, 1.0)),
+            ),
+            Etat::Pret(_) | Etat::Installation => ("Installation de la mise à jour…".into(), None),
+            // Échec : message gardé en vue (clic : nouvel essai).
+            Etat::Echec(m) => (m, None),
+            _ => return None,
+        };
+        let g = ligne(p, &texte, moyen(13.5), jt.texte);
+        let gs = g.size();
+        let lbarre = if progres.is_some() { 120.0 } else { 0.0 };
+        let r = Rect::from_min_max(
+            Pos2::new(droite - gs.x - lbarre - 28.0 - lbarre.min(10.0), y - 15.0),
+            Pos2::new(droite, y + 15.0),
+        );
+        let mut rep = ui.interact(r, Id::unique("maj"), Sense::CLICK);
+        if progres.is_none() {
+            rep = rep.on_hover_cursor(egui::CursorIcon::PointingHand);
+        }
+        panneau(
+            p,
+            r,
+            15.0,
+            if rep.hovered() && progres.is_none() {
+                jt.surface_haute
+            } else {
+                jt.surface
+            },
+            Some(alpha(jt.accent, 0.8)),
+        );
+        p.galley(Pos2::new(r.left() + 14.0, y - gs.y * 0.5), g, jt.texte);
+        if let Some(f) = progres {
+            let b = Rect::from_min_size(
+                Pos2::new(r.right() - 14.0 - lbarre, y - 2.0),
+                Vec2::new(lbarre, 4.0),
+            );
+            p.rect_filled(b, CornerRadius::same(2), jt.surface_haute);
+            p.rect_filled(
+                Rect::from_min_size(b.min, Vec2::new(lbarre * f, 4.0)),
+                CornerRadius::same(2),
+                jt.accent,
+            );
+        }
+        if rep.clicked() {
+            match self.maj.etat() {
+                Etat::Dispo(_) => self.maj.telecharger(),
+                Etat::Echec(_) => self.maj.chercher(false),
+                _ => {}
+            }
+        }
+        Some(r.left())
     }
 
     /// Barre de défilement (piste discrète, poignée qui s'épaissit au survol) et, pendant un

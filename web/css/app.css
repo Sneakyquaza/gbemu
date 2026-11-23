@@ -238,8 +238,22 @@ svg {
 
 .tete-actions {
   display: flex;
+  align-items: center;
   gap: 4px;
   margin-right: -10px;
+}
+/* Appli Windows (ordinateur seulement) */
+.bouton.windows {
+  margin-right: 8px;
+  text-decoration: none;
+}
+.lien {
+  color: var(--accent-clair);
+}
+@media (max-width: 599px) {
+  .bouton.windows small {
+    display: none;
+  }
 }
 
 .astuce {

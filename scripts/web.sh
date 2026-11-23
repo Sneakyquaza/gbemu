@@ -82,6 +82,12 @@ FIN
 EMPREINTE=$(cd "$SORTIE" && find . -type f ! -name sw.js -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)
 sed -i "s/^const VERSION = \"dev\";/const VERSION = \"$EMPREINTE\";/" "$SORTIE/sw.js"
 
+# Appli Windows (scripts/publier-exe.sh), copiée après l'empreinte : une nouvelle version de
+# l'exe ne vide pas le cache hors ligne du site (sw.js ne met jamais telecharger/ en cache).
+if [ -d out/telecharger ]; then
+  cp -r out/telecharger "$SORTIE/telecharger"
+fi
+
 # Garde-fou : jamais de ROM ni de sauvegarde dans ce qui sera publié, hors liste blanche
 # (chemin et empreinte exacts des jeux libres).
 INTRUS=$(find "$SORTIE" -type f \( -iname '*.gb' -o -iname '*.gbc' -o -iname '*.gba' -o -iname '*.zip' \

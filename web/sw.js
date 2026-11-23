@@ -2,6 +2,7 @@
 // scripts/web.sh (empreinte des fichiers) : une nouvelle version vide l'ancien cache.
 // Les ROM et sauvegardes du joueur ne passent jamais par ici (IndexedDB) ; seuls les 2 jeux
 // libres servis par le site (jeux-libres/) sont en cache, pour les ajouter hors ligne.
+// L'appli Windows (telecharger/) passe toujours par le réseau, jamais par le cache.
 
 const VERSION = "dev";
 const CACHE = "gbemu-" + VERSION;
@@ -54,7 +55,9 @@ self.addEventListener("message", (e) => {
 
 // Cache d'abord (hors ligne), réseau en secours.
 self.addEventListener("fetch", (e) => {
-  if (e.request.method !== "GET" || new URL(e.request.url).origin !== location.origin) return;
+  const url = new URL(e.request.url);
+  if (e.request.method !== "GET" || url.origin !== location.origin) return;
+  if (url.pathname.includes("/telecharger/")) return;
   e.respondWith(
     caches.match(e.request, { ignoreSearch: true }).then((r) => r || fetch(e.request)),
   );

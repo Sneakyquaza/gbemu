@@ -35,6 +35,9 @@ enum Act {
     Intro,
     Touches,
     HorsLigne,
+    MajAuto,
+    /// Rechercher une mise à jour, ou l'installer si une version est annoncée.
+    MajChercher,
     Licences,
     Metadonnees,
     SsUtilisateur,
@@ -170,7 +173,32 @@ impl App {
                     Some("Images, ScreenScraper".into()),
                     Act::Metadonnees,
                 ));
-                v.push(("Licences et à propos".into(), None, Act::Licences));
+                v.push((
+                    "Chercher les mises à jour au lancement".into(),
+                    oui_non(!self.config.sans_maj_auto),
+                    Act::MajAuto,
+                ));
+                use crate::maj::{Etat, VERSION};
+                let (nom, val) = match self.maj.etat() {
+                    Etat::Rien => ("Rechercher une mise à jour", format!("Version {VERSION}")),
+                    Etat::Recherche => ("Rechercher une mise à jour", "Recherche…".into()),
+                    Etat::AJour => ("Rechercher une mise à jour", format!("À jour ({VERSION})")),
+                    Etat::Erreur(m) | Etat::Echec(m) => ("Rechercher une mise à jour", m),
+                    Etat::Dispo(a) => {
+                        ("Mettre à jour", format!("Version {} disponible", a.version))
+                    }
+                    Etat::Telechargement(_, f, t) => (
+                        "Mise à jour",
+                        format!("Téléchargement {} %", f * 100 / t.max(1)),
+                    ),
+                    Etat::Pret(_) | Etat::Installation => ("Mise à jour", "Installation…".into()),
+                };
+                v.push((nom.into(), Some(val), Act::MajChercher));
+                v.push((
+                    "Licences et à propos".into(),
+                    Some(format!("gbemu {VERSION}")),
+                    Act::Licences,
+                ));
                 v.push(("Fermer".into(), None, Act::Fermer));
             }
             GenreMenu::Metadonnees => {
@@ -335,6 +363,17 @@ impl App {
                 self.config.hors_ligne = !self.config.hors_ligne;
                 self.config.enregistrer(&self.chemins.config());
             }
+            Act::MajAuto => {
+                self.config.sans_maj_auto = !self.config.sans_maj_auto;
+                self.config.enregistrer(&self.chemins.config());
+            }
+            Act::MajChercher => match self.maj.etat() {
+                crate::maj::Etat::Dispo(_) => self.maj.telecharger(),
+                _ if self.config.hors_ligne => {
+                    self.dire("Mode hors ligne : recherche de mise à jour impossible")
+                }
+                _ => self.maj.chercher(false),
+            },
             Act::Licences => self.ouvrir_menu(GenreMenu::Licences),
             Act::Metadonnees => self.ouvrir_menu(GenreMenu::Metadonnees),
             Act::RetourReglages => {

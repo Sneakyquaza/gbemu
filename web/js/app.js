@@ -412,6 +412,22 @@ $("b-astuce-fermer").addEventListener("click", () => {
 });
 majAstuce();
 
+// Appli Windows sur ordinateur (pas sur téléphone ni tablette) : version et taille lues dans
+// telecharger/version.json ; fichier absent ou hors ligne : rien n'est affiché.
+if (!tactile && !ios && !/Android|Mobi/.test(navigator.userAgent)) {
+  fetch("telecharger/version.json", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : Promise.reject()))
+    .then((v) => {
+      if (typeof v.version !== "string" || !Number.isFinite(v.taille)) return;
+      const info = `${v.version} · ${(v.taille / 1048576).toFixed(1).replace(".", ",")} Mo`;
+      $("b-windows-info").textContent = info;
+      $("r-windows-lien").textContent = `gbemu ${info}`;
+      $("b-windows").hidden = false;
+      $("r-windows").hidden = false;
+    })
+    .catch(() => {});
+}
+
 // ---------- Partie ----------
 
 let partie = null;

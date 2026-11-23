@@ -222,6 +222,9 @@ pub struct Config {
     /// Jeux ajoutés : proposer, faire ou ne pas faire le téléchargement des infos et images.
     #[serde(deserialize_with = "ou_defaut")]
     pub nouveaux_jeux: NouveauxJeux,
+    /// Pas de recherche de mise à jour au lancement.
+    #[serde(deserialize_with = "ou_defaut")]
+    pub sans_maj_auto: bool,
 }
 
 pub struct Chemins {

@@ -12,6 +12,7 @@ mod intro;
 mod jaquettes;
 mod jeu;
 mod machine;
+mod maj;
 mod manette;
 mod rembobinage;
 mod robot;
@@ -28,7 +29,8 @@ use std::time::{Instant, SystemTime};
 
 const AIDE: &str = "gbemu [--jeux DOSSIER] [--donnees DOSSIER] [--rom FICHIER.gb|.gbc|.gba]
   Vérification visuelle : [--demo] [--capture SORTIE.png] [--images N] [--taille LxH]
-  [--menu pause|reglages|metadonnees|fiche|filtre|touches[-raccourcis|-capture|-allume|-conflit]] [--grille] [--recherche TEXTE] [--selection N]";
+  [--menu pause|reglages|metadonnees|fiche|filtre|touches[-raccourcis|-capture|-allume|-conflit]] [--grille] [--recherche TEXTE] [--selection N]
+  Mise à jour (essais) : [--maj-url URL_DE_VERSION.JSON] [--maj-auto]";
 
 fn main() -> eframe::Result {
     let debut = Instant::now();
@@ -49,6 +51,8 @@ fn main() -> eframe::Result {
         selection: 0,
         grille: false,
         robot: false,
+        maj_url: None,
+        maj_auto: false,
     };
     let mut taille = [1280.0f32, 800.0];
     let mut args = std::env::args().skip(1);
@@ -65,6 +69,10 @@ fn main() -> eframe::Result {
             "--recherche" => opts.recherche = Some(val()),
             "--grille" => opts.grille = true,
             "--selection" => opts.selection = val().parse().unwrap_or(0),
+            "--maj-url" => opts.maj_url = Some(val()),
+            "--maj-auto" => opts.maj_auto = true,
+            // Relance par une mise à jour (voir plus bas).
+            "--apres-maj" => {}
             "--taille" => {
                 let v = val();
                 if let Some((l, h)) = v.split_once('x') {
@@ -86,10 +94,20 @@ fn main() -> eframe::Result {
 
     let donnees = sauve::Chemins::trouver(opts.donnees.clone()).donnees;
     journal_plantage(donnees.join("crash.log"));
-    let _verrou = match sauve::verrou_instance(&donnees) {
+    // Relance après une mise à jour : l'ancienne fenêtre finit d'enregistrer ses sauvegardes,
+    // son verrou est attendu (30 s au plus).
+    let apres_maj = tous.iter().any(|a| a == "--apres-maj");
+    let mut verrou = sauve::verrou_instance(&donnees);
+    let limite = Instant::now() + std::time::Duration::from_secs(30);
+    while apres_maj && verrou.is_err() && Instant::now() < limite {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        verrou = sauve::verrou_instance(&donnees);
+    }
+    let _verrou = match verrou {
         Ok(v) => v,
         Err(sauve::DejaOuvert) => return deja_ouvert(opts.capture.is_some()),
     };
+    maj::nettoyer();
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

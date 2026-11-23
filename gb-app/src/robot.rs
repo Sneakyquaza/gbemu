@@ -750,6 +750,8 @@ impl Robot {
             selection: 0,
             grille: false,
             robot: true,
+            maj_url: None,
+            maj_auto: false,
         }
     }
 
