@@ -7,6 +7,8 @@ use crate::jaquettes;
 use crate::sauve::NouveauxJeux;
 use crate::sons_ui::Son;
 use crate::telechargement::Tache;
+use std::cell::RefCell;
+use std::sync::mpsc;
 
 pub(super) struct Proposition {
     taches: Vec<Tache>,
@@ -16,6 +18,15 @@ pub(super) struct Proposition {
 }
 
 const CHOIX: [&str; 3] = ["Oui", "Plus tard", "Ne plus demander"];
+
+/// Touches ignorées juste après l'ouverture de la question (frappe de recherche en cours).
+const GARDE_TOUCHES: f64 = 0.3;
+
+thread_local! {
+    /// Tâches manquantes en cours de calcul (accès disque par jeu, hors du fil de l'interface).
+    /// raccourci : par fil plutôt que champ d'`App` (app.rs hors du lot), à déplacer dans `App`.
+    static CALCUL: RefCell<Option<mpsc::Receiver<Vec<Tache>>>> = const { RefCell::new(None) };
+}
 
 /// CRC des jeux de `apres` absents de `avant` (jeux ajoutés depuis la dernière analyse).
 pub(super) fn nouveaux(avant: &[Rom], apres: &[Rom]) -> Vec<u32> {
@@ -51,28 +62,73 @@ impl App {
         }
     }
 
-    /// Nouveaux jeux et base prêts : propose (ou lance, selon le réglage) le téléchargement de
-    /// ceux à qui il manque quelque chose.
+    /// Nouveaux jeux et base prêts : cherche en fond ceux à qui il manque quelque chose, puis
+    /// propose (ou lance, selon le réglage) leur téléchargement.
     fn preparer_proposition(&mut self) {
-        if self.nouveaux.is_empty() || self.base.is_none() || self.proposition.is_some() {
+        let fini = CALCUL.with_borrow_mut(|c| {
+            let r = c.as_ref()?.try_recv();
+            match r {
+                Ok(t) => {
+                    *c = None;
+                    Some(t)
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    *c = None;
+                    None
+                }
+                Err(mpsc::TryRecvError::Empty) => None,
+            }
+        });
+        if let Some(taches) = fini {
+            self.proposer(taches);
+        }
+        if self.nouveaux.is_empty()
+            || self.base.is_none()
+            || self.proposition.is_some()
+            || CALCUL.with_borrow(|c| c.is_some())
+        {
             return;
         }
         let nouveaux: HashSet<u32> = std::mem::take(&mut self.nouveaux).into_iter().collect();
+        if self.config.nouveaux_jeux == NouveauxJeux::Jamais {
+            return;
+        }
         let ss = self.ss_id.actif();
-        let dossier = self.chemins.jaquettes();
         let mut vus = HashSet::new();
         let taches: Vec<Tache> = self
             .roms
             .iter()
             .filter(|r| nouveaux.contains(&r.crc) && vus.insert(r.crc))
             .map(|r| self.tache(r))
-            .filter(|t| {
-                ss || (!t.nom.is_empty()
-                    && [Vignette::Boite, Vignette::Titre, Vignette::Capture]
-                        .into_iter()
-                        .any(|v| jaquettes::manquante(&dossier, t.plateforme, &t.nom, v)))
-            })
+            .filter(|t| ss || !t.nom.is_empty())
             .collect();
+        if taches.is_empty() {
+            return;
+        }
+        if ss {
+            self.proposer(taches);
+            return;
+        }
+        let dossier = self.chemins.jaquettes();
+        let (tx, rx) = mpsc::channel();
+        let r = reveil(&self.ctx);
+        std::thread::spawn(move || {
+            let taches: Vec<Tache> = taches
+                .into_iter()
+                .filter(|t| {
+                    [Vignette::Boite, Vignette::Titre, Vignette::Capture]
+                        .into_iter()
+                        .any(|v| jaquettes::manquante(&dossier, t.plateforme, &t.nom, v))
+                })
+                .collect();
+            if tx.send(taches).is_ok() {
+                r();
+            }
+        });
+        CALCUL.with_borrow_mut(|c| *c = Some(rx));
+    }
+
+    fn proposer(&mut self, taches: Vec<Tache>) {
         if taches.is_empty() {
             return;
         }
@@ -170,6 +226,13 @@ impl App {
     }
 
     pub(super) fn entrees_proposition(&mut self, evts: &[Event], pad: Etat) {
+        if self
+            .proposition
+            .as_ref()
+            .is_some_and(|p| self.t_prec - p.ouvert_a < GARDE_TOUCHES)
+        {
+            return;
+        }
         let mut dx = 0i32;
         let mut valider = pad.appuis & b::SUD != 0;
         let mut plus_tard = pad.appuis & b::EST != 0;
@@ -187,7 +250,7 @@ impl App {
                 match key {
                     Key::ArrowLeft => dx -= 1,
                     Key::ArrowRight | Key::Tab => dx += 1,
-                    Key::Enter | Key::Space => valider = true,
+                    Key::Enter => valider = true,
                     Key::Escape | Key::Backspace => plus_tard = true,
                     _ => {}
                 }
@@ -316,17 +379,15 @@ impl App {
     }
 
     /// Téléchargement en cours, dans le pied (à gauche de `droite`) : texte, barre fine et
-    /// croix d'annulation. Faux si rien n'est en cours.
+    /// croix d'annulation. Rend le bord gauche de la pastille, `None` si rien n'est en cours.
     pub(super) fn dessiner_telechargement(
         &mut self,
         ui: &egui::Ui,
         p: &egui::Painter,
         droite: f32,
         y: f32,
-    ) -> bool {
-        let Some((faits, total)) = self.tele.as_ref().and_then(|t| t.progres()) else {
-            return false;
-        };
+    ) -> Option<f32> {
+        let (faits, total) = self.tele.as_ref().and_then(|t| t.progres())?;
         let jt = j();
         let texte = if crate::sauve::hors_ligne() {
             format!("Infos et images : en pause (hors ligne), {faits} / {total}")
@@ -372,9 +433,7 @@ impl App {
             }
             self.dire("Téléchargement annulé");
         }
-        // Progression relue de temps en temps (le fil réveille aussi à chaque jeu).
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(500));
-        true
+        // Pas de repeint périodique : le fil réveille l'interface à chaque jeu traité.
+        Some(r.left())
     }
 }

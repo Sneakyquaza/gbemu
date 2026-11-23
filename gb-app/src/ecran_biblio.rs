@@ -808,15 +808,25 @@ impl App {
                 ("F11", "Plein écran"),
             ]
         };
+        // Pastille de droite d'abord : les aides qui ne tiennent pas à sa gauche sont masquées.
+        let mut limite = ecran.right() - MARGE;
+        let occupe = if self.filtre_meta.is_some() {
+            self.dessiner_filtre_meta(ui, &p, limite, yp);
+            true
+        } else if let Some(g) = self.dessiner_telechargement(ui, &p, limite, yp) {
+            limite = g - 22.0;
+            true
+        } else {
+            false
+        };
         let mut xp = ecran.left() + MARGE;
         for (t, a) in puces {
+            if xp + largeur_puce(&p, t, a) > limite {
+                break;
+            }
             xp += puce(&p, Pos2::new(xp, yp), t, a) + 22.0;
         }
-        if self.filtre_meta.is_some() {
-            self.dessiner_filtre_meta(ui, &p, ecran.right() - MARGE, yp);
-            return;
-        }
-        if self.dessiner_telechargement(ui, &p, ecran.right() - MARGE, yp) {
+        if occupe {
             return;
         }
         let g = ligne(
