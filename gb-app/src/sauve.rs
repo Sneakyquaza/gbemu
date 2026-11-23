@@ -410,7 +410,7 @@ fn refuse_en_test() -> io::Result<()> {
 /// antivirus, OneDrive). Les tâches restent dans la file pendant leur écriture : une lecture
 /// voit toujours la dernière version demandée ([`en_attente`]).
 struct File {
-    /// Chemin, données, groupe (0 : aucun).
+    /// Chemin, données, groupe (0 : écriture seule, remplaçable).
     taches: std::collections::VecDeque<(PathBuf, std::sync::Arc<[u8]>, u64)>,
     fil: bool,
     groupes: u64,
@@ -429,14 +429,19 @@ fn file() -> std::sync::MutexGuard<'static, File> {
     FILE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// [`ecrire_atomique`] sur le fil d'écriture, dans l'ordre des demandes.
+/// [`ecrire_atomique`] sur le fil d'écriture, dans l'ordre des demandes ; une version encore en
+/// attente du même fichier est remplacée (son `.bak` est alors la version d'avant sur le disque).
 pub fn ecrire_en_fond(chemin: &Path, donnees: Vec<u8>) {
-    ecrire_groupe_en_fond(vec![(chemin.to_path_buf(), donnees)]);
+    ajouter_en_fond(vec![(chemin.to_path_buf(), donnees)], true);
 }
 
 /// Plusieurs écritures en fond, dans l'ordre ; une écriture ratée annule les suivantes du
 /// groupe (état d'abord : sa miniature et sa date ne le devancent jamais).
 pub fn ecrire_groupe_en_fond(fichiers: Vec<(PathBuf, Vec<u8>)>) {
+    ajouter_en_fond(fichiers, false);
+}
+
+fn ajouter_en_fond(fichiers: Vec<(PathBuf, Vec<u8>)>, remplacer: bool) {
     let mut f = file();
     f.groupes += 1;
     let g = f.groupes;
@@ -453,6 +458,19 @@ pub fn ecrire_groupe_en_fond(fichiers: Vec<(PathBuf, Vec<u8>)>) {
         ECHEC_FOND.store(!ok, Ordering::Relaxed);
         return;
     }
+    if remplacer {
+        // Version plus ancienne du même fichier pas encore commencée : remplacée (la file reste
+        // bornée même si le disque est très lent). La tâche de tête est peut-être en cours
+        // d'écriture : gardée. Les groupes (états) gardent chaque version : le `.bak` de
+        // l'emplacement doit rester la sauvegarde d'avant (annulation).
+        let tete = f.taches.pop_front();
+        f.taches
+            .retain(|(c, _, g)| *g == 0 || !fichiers.iter().any(|(n, _)| n == c));
+        if let Some(t) = tete {
+            f.taches.push_front(t);
+        }
+    }
+    let g = if remplacer { 0 } else { g };
     for (c, d) in fichiers {
         f.taches.push_back((c, d.into(), g));
     }
@@ -461,18 +479,18 @@ pub fn ecrire_groupe_en_fond(fichiers: Vec<(PathBuf, Vec<u8>)>) {
 
 fn ecrivain() {
     let mut f = file();
-    let mut rate = 0;
+    let mut rate = None;
     loop {
         let Some((c, d, g)) = f.taches.front().cloned() else {
             f = FILE_CV.wait(f).unwrap_or_else(|e| e.into_inner());
             continue;
         };
         drop(f);
-        if g != rate {
+        if g == 0 || Some(g) != rate {
             let ok = ecrire_atomique(&c, &d).is_ok();
             ECHEC_FOND.store(!ok, Ordering::Relaxed);
-            if !ok {
-                rate = g;
+            if !ok && g != 0 {
+                rate = Some(g);
             }
         }
         f = file();
@@ -884,6 +902,8 @@ mod tests {
         ecrire_en_fond(&f, b"deux".to_vec());
         ecrire_en_fond(&f, b"trois".to_vec());
         assert_eq!(lire(&f).unwrap(), b"trois");
+        // « deux » pas commencée est remplacée par « trois » (au plus une en cours en tête).
+        assert!(file().taches.iter().filter(|(c, _, _)| c == &f).count() <= 2);
         assert!(existe(&d.0.join("Jeu [0].sav")));
         attendre_ecritures();
         assert_eq!(std::fs::read(&f).unwrap(), b"trois");

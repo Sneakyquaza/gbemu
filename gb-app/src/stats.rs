@@ -177,6 +177,8 @@ mod tests {
         s.lancer(7);
         s.compter(90.0, 1.0);
         s.arreter();
+        // Écritures en fond : le `.bak` est la version d'avant sur le disque.
+        sauve::attendre_ecritures();
         assert!(s.basculer_favori(7));
         let s2 = Stats::charger(c.clone());
         assert_eq!(s2.jeu(7).temps, 90.0);
