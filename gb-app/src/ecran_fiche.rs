@@ -187,17 +187,13 @@ impl App {
             }
         }
         if let (Some(ss), false) = (&self.ss, self.ss_fiches.contains_key(&rom.crc)) {
-            let nom = rom.interne.clone().unwrap_or_else(|| {
-                rom.fichier
-                    .file_name()
-                    .map(|f| f.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            });
+            // Même plateforme (celle de la base) et même nom que l'import : même cache.
+            let t = self.tache(&rom);
             ss.demander(Demande {
-                crc: rom.crc,
-                taille: rom.taille,
-                plateforme: rom.plateforme,
-                nom: nom.rsplit(['/', '\\']).next().unwrap_or(&nom).to_string(),
+                crc: t.crc,
+                taille: t.taille,
+                plateforme: t.plateforme,
+                nom: t.fichier,
                 id: self.ss_id.clone(),
             });
         }
@@ -840,7 +836,13 @@ impl App {
             .filter(|s| !s.is_empty());
         let (resume, source) = match (wiki, synopsis) {
             (Some((w, true, url)), _) => (Some(w), Some(("Résumé : Wikipédia, CC BY-SA", url))),
-            (_, Some(s)) => (Some(s), None),
+            (_, Some(s)) => (
+                Some(s),
+                Some((
+                    "Résumé : ScreenScraper",
+                    Some("https://www.screenscraper.fr/".to_string()),
+                )),
+            ),
             (Some((w, false, url)), None) => (
                 Some(w),
                 Some(("Résumé : Wikipédia (en anglais), CC BY-SA", url)),
@@ -856,7 +858,7 @@ impl App {
             pc.galley(Pos2::new(droite.left(), y), g, jt.doux);
             y += gs.y + 6.0;
             if let Some((lib, url)) = source {
-                // Attribution (lien vers l'article) : exigée par la licence CC BY-SA.
+                // Attribution (lien vers l'article ou le site) : exigée par la licence CC BY-SA.
                 let g = ligne(&pc, lib, regulier(12.0), jt.discret);
                 let r = Rect::from_min_size(Pos2::new(droite.left(), y), g.size());
                 let rep = ui

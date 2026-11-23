@@ -84,15 +84,49 @@ impl Identifiants {
             && (self.devid != saisis.devid.trim() || self.devpassword != saisis.devpassword)
     }
 
-    /// Écrit les identifiants (lisibles par l'utilisateur seul sous Linux).
+    /// Écrit les identifiants (lisibles par l'utilisateur seul sous Unix dès la création du
+    /// `.tmp`). Sans `.bak` : un mot de passe effacé ne doit survivre dans aucun fichier, donc
+    /// l'ancien `.bak` et les `.tmp` restés de `ecrire_atomique` sont supprimés.
     pub fn enregistrer(&self, donnees: &Path) -> std::io::Result<()> {
+        use std::io::Write as _;
         let chemin = donnees.join(FICHIER);
         let json = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
-        crate::sauve::ecrire_atomique(&chemin, &json)?;
+        std::fs::create_dir_all(donnees)?;
+        let tmp = chemin.with_extension("tmp");
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        {
+            let mut f = o.open(&tmp)?;
+            f.write_all(&json)?;
+            f.sync_all()?;
+        }
         #[cfg(unix)]
         {
+            // `.tmp` déjà présent (mode d'origine gardé par `open`) : remis en 0600.
             use std::os::unix::fs::PermissionsExt as _;
-            let _ = std::fs::set_permissions(&chemin, std::fs::Permissions::from_mode(0o600));
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        if let Err(e) = std::fs::rename(&tmp, &chemin) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        let prefixe = format!("{FICHIER}.");
+        let restes = std::fs::read_dir(donnees)
+            .map(|l| {
+                l.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with(&prefixe) && n.ends_with(".tmp"))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for p in restes.into_iter().chain([chemin.with_extension("bak")]) {
+            let _ = std::fs::remove_file(p);
         }
         Ok(())
     }
@@ -197,12 +231,21 @@ fn choisir<'a>(v: &'a Value, champ: &str, preferes: &[&str]) -> Option<(&'a Valu
 }
 
 /// Seules les adresses HTTPS de ScreenScraper reçoivent les identifiants.
+/// Analyse par `url::Url` (via ureq, le même analyseur que celui de la connexion), après refus
+/// de l'antislash et des caractères de contrôle ou d'espacement.
 pub fn adresse_sure(url: &str) -> bool {
-    let Some(reste) = url.strip_prefix("https://") else {
+    if url.contains(|c: char| c == '\\' || c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    let Ok(r) = ureq::get(url).request_url() else {
         return false;
     };
-    let hote = reste.split(['/', '?', '#']).next().unwrap_or("");
-    !hote.contains(['@', ':'])
+    let u = r.as_url();
+    let hote = u.host_str().unwrap_or("");
+    u.scheme() == "https"
+        && u.username().is_empty()
+        && u.password().is_none()
+        && u.port().is_none()
         && (hote == "screenscraper.fr" || hote.ends_with(".screenscraper.fr"))
 }
 
@@ -675,6 +718,11 @@ mod tests {
             "https://evilscreenscraper.fr/x",
             "https://user@evil.com/?a=.screenscraper.fr",
             "https://www.screenscraper.fr:8080/x",
+            "https://evil.example\\.screenscraper.fr/x",
+            "https://evil.example%5C.screenscraper.fr/x",
+            "https://evil.example\t.screenscraper.fr/x",
+            "https://user:mdp@www.screenscraper.fr/x",
+            "pas une adresse",
         ] {
             assert!(!adresse_sure(non), "{non}");
         }
@@ -807,5 +855,25 @@ mod tests {
             (lu.devid.as_str(), lu.utilisateur.as_str()),
             ("appli", "moi")
         );
+        // Effacement : l'ancien mot de passe ne reste dans aucun fichier (`.bak` et `.tmp`
+        // laissés par l'ancienne écriture compris), et rien ne le fait revenir.
+        std::fs::write(d.0.join("screenscraper.bak"), b"secret").unwrap();
+        std::fs::write(d.0.join(format!("{FICHIER}.1-2.tmp")), b"secret").unwrap();
+        Identifiants::default().enregistrer(&d.0).unwrap();
+        for e in std::fs::read_dir(&d.0).unwrap().flatten() {
+            let contenu = std::fs::read(e.path()).unwrap();
+            assert!(
+                !contenu.windows(6).any(|w| w == b"secret"),
+                "{:?}",
+                e.path()
+            );
+        }
+        assert!(Identifiants::saisis(&d.0) == Identifiants::default());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let m = std::fs::metadata(d.0.join(FICHIER)).unwrap().permissions();
+            assert_eq!(m.mode() & 0o777, 0o600);
+        }
     }
 }
