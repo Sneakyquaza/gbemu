@@ -20,10 +20,10 @@ const FICHIERS = [
   "fonts/Rubik-Regular.ttf",
   "fonts/Rubik-Medium.ttf",
   "fonts/Rubik-Bold.ttf",
-  "icons/icone-192.png",
-  "icons/icone-512.png",
-  "icons/icone-masquable-512.png",
-  "icons/apple-touch-icon.png",
+  "icones/icone-192.png",
+  "icones/icone-512.png",
+  "icones/icone-masquable-512.png",
+  "icones/apple-touch-icon.png",
 ];
 
 self.addEventListener("install", (e) => {

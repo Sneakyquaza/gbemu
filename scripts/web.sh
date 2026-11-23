@@ -31,7 +31,7 @@ else
   echo "wasm-opt absent : .wasm non réoptimisé (facultatif, paquet binaryen)"
 fi
 
-cp -r web/index.html web/manifest.webmanifest web/sw.js web/css web/js web/icons "$SORTIE/"
+cp -r web/index.html web/manifest.webmanifest web/sw.js web/css web/js web/icones "$SORTIE/"
 cp gb-app/assets/fonts/Rubik-Regular.ttf gb-app/assets/fonts/Rubik-Medium.ttf \
   gb-app/assets/fonts/Rubik-Bold.ttf "$SORTIE/fonts/"
 cp LICENSE "$SORTIE/licences/gbemu-MIT.txt"

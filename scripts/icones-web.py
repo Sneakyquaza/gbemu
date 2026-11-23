@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Icônes de la version web (web/icons/) : la console de l'app de bureau sur le fond Nuit.
+"""Icônes de la version web (web/icones/) : la console de l'app de bureau sur le fond Nuit.
 Usage : python3 -I scripts/icones-web.py  (Pillow requis ; à relancer seulement si le dessin change)."""
 from pathlib import Path
 from PIL import Image, ImageDraw
@@ -79,7 +79,7 @@ def dessiner(taille, echelle_console):
 
 
 def main():
-    dossier = Path(__file__).resolve().parent.parent / "web" / "icons"
+    dossier = Path(__file__).resolve().parent.parent / "web" / "icones"
     dossier.mkdir(parents=True, exist_ok=True)
     dessiner(192, 1.15).save(dossier / "icone-192.png", optimize=True)
     dessiner(512, 1.15).save(dossier / "icone-512.png", optimize=True)
