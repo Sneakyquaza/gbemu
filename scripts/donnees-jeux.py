@@ -335,7 +335,7 @@ def ecrire(jeux, resumes):
                              s(r[0]), s(r[1]))
     tete = bytearray(struct.pack("<I", len(chaines)))
     for c in chaines:
-        b = c.encode("utf-8")[:65535]
+        b = c.encode("utf-8")[:65535].decode("utf-8", "ignore").encode("utf-8")
         tete += struct.pack("<H", len(b)) + b
     flux = bytes(tete) + struct.pack("<I", len(jeux)) + bytes(corps)
     os.makedirs(os.path.dirname(SORTIE), exist_ok=True)

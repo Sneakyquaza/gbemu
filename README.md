@@ -17,13 +17,17 @@
   - ouverture en ~0,1 s.
 - **Aucun jeu n'est fourni.** L'utilisateur ajoute lui-même ses propres fichiers.
 
-## Métadonnées (ScreenScraper)
+## Métadonnées
 
-Une intégration de l'API ScreenScraper v2 est en cours (résumés, notes, logos, par CRC + taille + système, dans le respect des quotas renvoyés par l'API, avec cache local et mode hors ligne). Les identifiants de l'utilisateur restent sur sa machine.
+- **Intégrées, hors ligne** : une base d'environ 8 100 jeux est livrée dans l'application (titre, année, éditeur, développeur, genre, nombre de joueurs, résumé tiré de Wikipédia). Aucune connexion n'est nécessaire pour l'afficher.
+- **Jaquettes** : à l'import, l'application propose de télécharger les jaquettes manquantes depuis [libretro-thumbnails](https://github.com/libretro-thumbnails/libretro-thumbnails) ; un bouton sur la fiche de chaque jeu permet aussi de les télécharger une par une.
+- **ScreenScraper (facultatif)** : avec un compte [ScreenScraper](https://www.screenscraper.fr), la fiche peut afficher en plus un résumé, une note, un logo et une jaquette. Les identifiants sont saisis par l'utilisateur et restent enregistrés sur sa machine.
 
 ## Tests
 
 Validé uniquement avec des ROM de test publiques : blargg (cpu_instrs, instr_timing, mem_timing, dmg_sound, cgb_sound), mooneye-test-suite, dmg-acid2 / cgb-acid2, jsmolka gba-tests, FuzzARM, armwrestler, nba-emu hw-test, destoer, démos tonc. Voir `docs/etat-tests.md` et `docs/etat-tests-gba.md`.
+
+L'application est aussi testée par un robot d'utilisateurs simulés (`gbemu --robot`, piloté par `scripts/robot.py`) : des milliers de sessions sans fenêtre qui cliquent, tapent, utilisent la manette, ouvrent des fichiers abîmés ou piégés et ferment l'application au hasard. Voir `docs/robot-2026-11-23.md`.
 
 ```sh
 scripts/roms-test.sh      # télécharge les ROM de test publiques dans roms/
@@ -35,5 +39,7 @@ cargo build --release --target x86_64-pc-windows-gnu -p gb-app
 ## Licences tierces
 
 Voir `gb-app/assets/licences/LICENCES.txt` (polices Rubik et Silkscreen : OFL ; BIOS Cult-of-GBA : MIT ; crates Rust et leurs licences).
+
+- `gb-app/donnees/jeux.bin` : CC BY-SA 4.0 (libretro-database, Wikipédia/Wikidata).
 
 Game Boy, Game Boy Color et Game Boy Advance sont des marques de Nintendo. Ce projet n'est ni affilié à Nintendo ni approuvé par Nintendo.

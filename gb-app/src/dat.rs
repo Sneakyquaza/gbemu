@@ -192,7 +192,8 @@ fn lire_integree(d: &[u8]) -> Option<Base> {
     for _ in 0..nb {
         let l = lire(2)?;
         let l = u16::from_le_bytes([l[0], l[1]]) as usize;
-        chaines.push(std::str::from_utf8(lire(l)?).ok()?);
+        // Chaîne non UTF-8 : remplacée caractère par caractère, seule son entrée en pâtit.
+        chaines.push(String::from_utf8_lossy(lire(l)?));
     }
     let nj = u32_(lire(4)?) as usize;
     let mut base = Base::default();
@@ -537,6 +538,15 @@ game (
         let mut d = b"GBJX\x01".to_vec();
         d.extend(z.finish().unwrap());
         assert!(lire_integree(&d).is_none());
+        // Chaîne non UTF-8 : la base reste lue, seule l'entrée est abîmée.
+        let mut faux = brut.clone();
+        faux[8] = 0xFF;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        z.write_all(&faux).unwrap();
+        let mut d = b"GBJX\x01".to_vec();
+        d.extend(z.finish().unwrap());
+        let b = lire_integree(&d).unwrap();
+        assert_eq!(b.jeux[&0x1234_5678].resume, "\u{FFFD}eu (France)");
     }
 
     #[test]
