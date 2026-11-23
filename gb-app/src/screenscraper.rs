@@ -440,8 +440,12 @@ fn boucle(
                 if let Some(d) = q.pop_front() {
                     break d;
                 }
-                q = match cv.wait(q) {
-                    Ok(q) => q,
+                // Propriétaire disparu (appli refermée) : le fil s'arrête.
+                if Arc::strong_count(&file) == 1 {
+                    return;
+                }
+                q = match cv.wait_timeout(q, std::time::Duration::from_secs(1)) {
+                    Ok((q, _)) => q,
                     Err(_) => return,
                 };
             }

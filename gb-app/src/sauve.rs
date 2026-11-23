@@ -406,6 +406,140 @@ fn refuse_en_test() -> io::Result<()> {
     Ok(())
 }
 
+/// File des écritures faites hors du fil de l'interface (synchronisation disque lente : HDD,
+/// antivirus, OneDrive). Les tâches restent dans la file pendant leur écriture : une lecture
+/// voit toujours la dernière version demandée ([`en_attente`]).
+struct File {
+    /// Chemin, données, groupe (0 : aucun).
+    taches: std::collections::VecDeque<(PathBuf, std::sync::Arc<[u8]>, u64)>,
+    fil: bool,
+    groupes: u64,
+}
+
+static FILE: std::sync::Mutex<File> = std::sync::Mutex::new(File {
+    taches: std::collections::VecDeque::new(),
+    fil: false,
+    groupes: 0,
+});
+static FILE_CV: std::sync::Condvar = std::sync::Condvar::new();
+/// Dernière écriture en fond échouée (disque plein, droits) : signalée par la partie.
+static ECHEC_FOND: AtomicBool = AtomicBool::new(false);
+
+fn file() -> std::sync::MutexGuard<'static, File> {
+    FILE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// [`ecrire_atomique`] sur le fil d'écriture, dans l'ordre des demandes.
+pub fn ecrire_en_fond(chemin: &Path, donnees: Vec<u8>) {
+    ecrire_groupe_en_fond(vec![(chemin.to_path_buf(), donnees)]);
+}
+
+/// Plusieurs écritures en fond, dans l'ordre ; une écriture ratée annule les suivantes du
+/// groupe (état d'abord : sa miniature et sa date ne le devancent jamais).
+pub fn ecrire_groupe_en_fond(fichiers: Vec<(PathBuf, Vec<u8>)>) {
+    let mut f = file();
+    f.groupes += 1;
+    let g = f.groupes;
+    if !f.fil {
+        f.fil = std::thread::Builder::new()
+            .name("ecritures".into())
+            .spawn(ecrivain)
+            .is_ok();
+    }
+    if !f.fil {
+        // Pas de fil possible : écritures immédiates.
+        drop(f);
+        let ok = fichiers.iter().all(|(c, d)| ecrire_atomique(c, d).is_ok());
+        ECHEC_FOND.store(!ok, Ordering::Relaxed);
+        return;
+    }
+    for (c, d) in fichiers {
+        f.taches.push_back((c, d.into(), g));
+    }
+    FILE_CV.notify_all();
+}
+
+fn ecrivain() {
+    let mut f = file();
+    let mut rate = 0;
+    loop {
+        let Some((c, d, g)) = f.taches.front().cloned() else {
+            f = FILE_CV.wait(f).unwrap_or_else(|e| e.into_inner());
+            continue;
+        };
+        drop(f);
+        if g != rate {
+            let ok = ecrire_atomique(&c, &d).is_ok();
+            ECHEC_FOND.store(!ok, Ordering::Relaxed);
+            if !ok {
+                rate = g;
+            }
+        }
+        f = file();
+        f.taches.pop_front();
+        FILE_CV.notify_all();
+    }
+}
+
+/// Attend que toutes les écritures en fond soient sur le disque (fermeture, renommages).
+pub fn attendre_ecritures() {
+    let mut f = file();
+    while !f.taches.is_empty() && f.fil {
+        f = FILE_CV.wait(f).unwrap_or_else(|e| e.into_inner());
+    }
+}
+
+/// Attend la fin des écritures en fond de ces fichiers (les autres continuent).
+pub fn attendre_ecritures_de(chemins: &[PathBuf]) {
+    let t = std::time::Instant::now();
+    let mut f = file();
+    while f.fil && f.taches.iter().any(|(c, _, _)| chemins.contains(c)) {
+        f = FILE_CV.wait(f).unwrap_or_else(|e| e.into_inner());
+    }
+    ATTENTE_US.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+}
+
+/// Temps passé à attendre le disque sur le fil de l'interface (µs, cumulé) : seules les actions
+/// explicites sur un emplacement (annuler, verrouiller, supprimer) attendent leurs écritures.
+pub static ATTENTE_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Dernière version demandée pour `chemin` et pas encore écrite.
+pub fn en_attente(chemin: &Path) -> Option<std::sync::Arc<[u8]>> {
+    let f = file();
+    f.taches
+        .iter()
+        .rev()
+        .find(|(c, _, _)| c == chemin)
+        .map(|(_, d, _)| d.clone())
+}
+
+/// Fichiers de `dossier` en attente d'écriture.
+pub fn en_attente_dans(dossier: &Path) -> Vec<PathBuf> {
+    let f = file();
+    f.taches
+        .iter()
+        .filter(|(c, _, _)| c.parent() == Some(dossier))
+        .map(|(c, _, _)| c.clone())
+        .collect()
+}
+
+/// Lecture d'un fichier qui tient compte des écritures en attente.
+pub fn lire_fichier(chemin: &Path) -> Option<Vec<u8>> {
+    en_attente(chemin)
+        .map(|d| d.to_vec())
+        .or_else(|| std::fs::read(chemin).ok())
+}
+
+/// Le fichier existe ou va être écrit.
+pub fn existe(chemin: &Path) -> bool {
+    en_attente(chemin).is_some() || chemin.is_file()
+}
+
+/// Vrai si la dernière écriture en fond a échoué.
+pub fn echec_ecriture() -> bool {
+    ECHEC_FOND.load(Ordering::Relaxed)
+}
+
 /// Écriture atomique : fichier temporaire (nom unique) synchronisé puis renommé par-dessus
 /// l'original, qui ne manque donc jamais. La version précédente est copiée en `.bak`.
 /// Remplacement refusé (antivirus, indexeur, OneDrive…) : 5 réessais, puis réécriture directe ;
@@ -483,6 +617,10 @@ fn temporaires(chemin: &Path) -> Vec<PathBuf> {
 /// `.tmp` valide plus récent est resté (remplacement refusé) ; principal absent ou invalide :
 /// le plus récent valide parmi `.tmp` et `.bak`.
 pub fn lire_valide(chemin: &Path, valide: impl Fn(&[u8]) -> bool) -> Option<Vec<u8>> {
+    // Écriture demandée et pas encore faite : c'est la version de référence.
+    if let Some(d) = en_attente(chemin) {
+        return Some(d.to_vec());
+    }
     let date = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let lu = |p: &Path| std::fs::read(p).ok().filter(|d| valide(d));
     let principal = lu(chemin);
@@ -532,33 +670,32 @@ pub fn historiser(chemin: &Path, garder: usize) -> io::Result<()> {
     );
     let mut t = SystemTime::now();
     let longueur = horodatage(t).len();
+    // Copies sur le disque et copies encore en attente d'écriture.
     let mut anciens: Vec<PathBuf> = std::fs::read_dir(&dossier)
-        .map(|l| {
-            l.flatten()
-                .filter(|e| {
-                    e.file_name().to_str().is_some_and(|n| {
-                        n.starts_with(&prefixe)
-                            && n.ends_with(".sav")
-                            && n.len() == prefixe.len() + longueur + 4
-                    })
-                })
-                .map(|e| e.path())
-                .collect()
-        })
+        .map(|l| l.flatten().map(|e| e.path()).collect::<Vec<_>>())
         .unwrap_or_default();
+    anciens.extend(en_attente_dans(&dossier));
+    anciens.retain(|p| {
+        p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            n.starts_with(&prefixe)
+                && n.ends_with(".sav")
+                && n.len() == prefixe.len() + longueur + 4
+        })
+    });
     anciens.sort();
+    anciens.dedup();
     if let Some(dernier) = anciens.last() {
-        if std::fs::read(dernier).ok().as_deref() == Some(&d[..]) {
+        if lire_fichier(dernier).as_deref() == Some(&d[..]) {
             return Ok(());
         }
     }
     let nom = |t| dossier.join(format!("{prefixe}{}.sav", horodatage(t)));
     let mut nouveau = nom(t);
-    while nouveau.exists() {
+    while existe(&nouveau) {
         t += Duration::from_millis(1);
         nouveau = nom(t);
     }
-    ecrire_atomique(&nouveau, &d)?;
+    ecrire_en_fond(&nouveau, d);
     anciens.push(nouveau);
     for vieux in &anciens[..anciens.len().saturating_sub(garder)] {
         let _ = std::fs::remove_file(vieux);
@@ -603,7 +740,7 @@ impl Config {
     pub fn enregistrer(&self, chemin: &Path) {
         HORS_LIGNE.store(self.hors_ligne, Ordering::Relaxed);
         if let Ok(json) = serde_json::to_vec_pretty(self) {
-            let _ = ecrire_atomique(chemin, &json);
+            ecrire_en_fond(chemin, json);
         }
     }
 }
@@ -736,6 +873,31 @@ mod tests {
         assert_eq!(r.ajouts, vec![PathBuf::from("/ok")]);
     }
 
+    /// Robot : la synchronisation disque se faisait sur le fil de l'interface (images de
+    /// 200 à 900 ms à chaque sauvegarde batterie sur disque lent). Les écritures passent en
+    /// fond ; les lectures voient tout de suite la dernière version demandée.
+    #[test]
+    fn ecritures_en_fond_relues_aussitot() {
+        let d = DossierTest::new("fond");
+        let f = d.0.join("Jeu [0].sav");
+        ecrire_atomique(&f, b"un").unwrap();
+        ecrire_en_fond(&f, b"deux".to_vec());
+        ecrire_en_fond(&f, b"trois".to_vec());
+        assert_eq!(lire(&f).unwrap(), b"trois");
+        assert!(existe(&d.0.join("Jeu [0].sav")));
+        attendre_ecritures();
+        assert_eq!(std::fs::read(&f).unwrap(), b"trois");
+        assert!(en_attente(&f).is_none());
+        // Groupe : une écriture ratée annule les suivantes.
+        std::fs::create_dir_all(d.0.join("dossier.state")).unwrap();
+        ecrire_groupe_en_fond(vec![
+            (d.0.join("dossier.state"), b"x".to_vec()),
+            (d.0.join("dossier.info.json"), b"{}".to_vec()),
+        ]);
+        attendre_ecritures();
+        assert!(!d.0.join("dossier.info.json").exists());
+    }
+
     #[test]
     fn historique_garde_les_dernieres() {
         let d = DossierTest::new("historique");
@@ -753,6 +915,7 @@ mod tests {
         ecrire_atomique(&f, b"courante").unwrap();
         historiser(&f, 5).unwrap();
         historiser(&f, 5).unwrap();
+        attendre_ecritures();
         let mut noms: Vec<String> = std::fs::read_dir(&h)
             .unwrap()
             .flatten()

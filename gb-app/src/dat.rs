@@ -88,12 +88,21 @@ pub fn encoder_url(s: &str) -> String {
 }
 
 pub fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(6))
+    let mut a = ureq::AgentBuilder::new();
+    // Robot de test : tout passe par un mandataire local fermé (aucune requête ne sort).
+    if RESEAU_COUPE.load(std::sync::atomic::Ordering::Relaxed) {
+        if let Ok(p) = ureq::Proxy::new("http://127.0.0.1:9") {
+            a = a.proxy(p);
+        }
+    }
+    a.timeout_connect(Duration::from_secs(6))
         .timeout(Duration::from_secs(30))
         .user_agent("gbemu/0.1")
         .build()
 }
+
+/// Levé par le robot de test avant toute création d'agent.
+pub static RESEAU_COUPE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Vrai si le fichier a été écrit il y a plus de `jours` jours.
 pub fn perime(chemin: &Path, jours: u64) -> bool {

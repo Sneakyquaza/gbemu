@@ -333,6 +333,24 @@ impl Manettes {
         }
     }
 
+    /// Sans fil de sondage : manettes simulées par [`Manettes::simuler`] (robot de test).
+    pub fn virtuelle() -> Manettes {
+        Manettes {
+            partage: Arc::default(),
+            pads: Vec::new(),
+            tenus: 0,
+            repetition: 0.0,
+            branchees: Vec::new(),
+        }
+    }
+
+    /// Publie un instantané comme le fil de sondage (`branchees` : nouvelles manettes).
+    pub fn simuler(&self, pads: Vec<Pad>, branchees: Vec<(String, String)>) {
+        let mut s = self.partage.lock().unwrap_or_else(|e| e.into_inner());
+        s.pads = pads;
+        s.branchees.extend(branchees);
+    }
+
     /// Manettes branchées, dans l'ordre de gilrs (la dernière branchée en dernier).
     pub fn pads(&self) -> &[Pad] {
         &self.pads

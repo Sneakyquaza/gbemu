@@ -135,7 +135,7 @@ impl Stats {
             jeux: self.jeux.clone(),
         };
         if let Ok(json) = serde_json::to_vec(&f) {
-            let _ = sauve::ecrire_atomique(chemin, &json);
+            sauve::ecrire_en_fond(chemin, json);
         }
     }
 }
@@ -182,6 +182,7 @@ mod tests {
         assert_eq!(s2.jeu(7).temps, 90.0);
         assert!(s2.jeu(7).favori && s2.jeu(7).dernier > 0);
         // Fichier abîmé : la copie `.bak` (avant le dernier favori) est reprise.
+        sauve::attendre_ecritures();
         std::fs::write(&c, b"{pas du json").unwrap();
         assert_eq!(Stats::charger(c.clone()).jeu(7).temps, 90.0);
         let _ = std::fs::remove_file(c.with_extension("bak"));

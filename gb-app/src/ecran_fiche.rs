@@ -456,7 +456,7 @@ impl App {
             Pos2::new(droite, y + 15.0),
         );
         let rep = ui
-            .interact(r, Id::unique("filtre-meta"), Sense::click())
+            .interact(r, Id::unique("filtre-meta"), Sense::CLICK)
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text("Retirer le filtre (Échap)");
         panneau(
@@ -494,6 +494,7 @@ impl App {
     }
 
     pub(super) fn dessiner_fiche(&mut self, ui: &mut egui::Ui) {
+        bloquer_dessous(ui, "fiche");
         let Some(&fi) = self.vue.get(self.sel) else {
             self.panneau = None;
             return;
@@ -546,7 +547,7 @@ impl App {
             .unwrap_or_else(|| couleur(pl));
 
         // Voile sur la bibliothèque ; un clic dessus ferme la fiche.
-        let fond = ui.interact(ecran, Id::unique("fiche-voile"), Sense::click());
+        let fond = ui.interact(ecran, Id::unique("fiche-voile"), Sense::CLICK);
         let p = ui.painter().clone();
         p.rect_filled(
             ecran,
@@ -570,7 +571,7 @@ impl App {
         d::ombre(&p, r, 22.0, 18.0, 48.0, 1.0);
         panneau(&p, r, 22.0, jt.surface, Some(jt.trait_));
         // Le panneau capte les clics (sinon le voile dessous fermerait la fiche).
-        let dans = ui.interact(r, Id::unique("fiche-panneau"), Sense::click());
+        let dans = ui.interact(r, Id::unique("fiche-panneau"), Sense::CLICK);
         if fond.clicked() && !dans.hovered() {
             self.fermer_fiche();
             return;
@@ -859,7 +860,7 @@ impl App {
                 let g = ligne(&pc, lib, regulier(12.0), jt.discret);
                 let r = Rect::from_min_size(Pos2::new(droite.left(), y), g.size());
                 let rep = ui
-                    .interact(r, Id::unique("fiche-source"), Sense::click())
+                    .interact(r, Id::unique("fiche-source"), Sense::CLICK)
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                 let c = if rep.hovered() { jt.doux } else { jt.discret };
                 pc.galley(r.min, g, c);
@@ -936,7 +937,7 @@ impl App {
             }
             let rb = Rect::from_min_size(Pos2::new(x, yb), Vec2::new(lb, hb));
             let rep = ui
-                .interact(rb, Id::unique(("fiche-bouton", k)), Sense::click())
+                .interact(rb, Id::unique(("fiche-bouton", k)), Sense::CLICK)
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             let choisi = k == bouton;
             let (fond_b, encre) = if principal {

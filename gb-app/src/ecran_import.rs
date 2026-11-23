@@ -215,6 +215,7 @@ impl App {
         let Some(prop) = &self.proposition else {
             return;
         };
+        bloquer_dessous(ui, "proposition");
         let jt = j();
         let n = prop.taches.len();
         let choix = prop.choix;
@@ -226,7 +227,7 @@ impl App {
         }
         let ecran = ui.max_rect();
         // Voile : bloque les clics vers la bibliothèque.
-        let _ = ui.interact(ecran, Id::unique("import-voile"), Sense::click());
+        let _ = ui.interact(ecran, Id::unique("import-voile"), Sense::CLICK);
         let mut p = ui.painter().clone();
         p.multiply_opacity(t);
         p.rect_filled(
@@ -270,7 +271,7 @@ impl App {
             let lb = g.size().x + 36.0;
             let rb = Rect::from_min_size(Pos2::new(x, yb), Vec2::new(lb, hb));
             let rep = ui
-                .interact(rb, Id::unique(("import-bouton", k)), Sense::click())
+                .interact(rb, Id::unique(("import-bouton", k)), Sense::CLICK)
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             let choisi = k == choix;
             let (fond, encre) = if k == 0 {
@@ -355,7 +356,7 @@ impl App {
         let cc = Pos2::new(r.right() - 17.0, y);
         let rc = Rect::from_center_size(cc, Vec2::splat(24.0));
         let rep = ui
-            .interact(rc, Id::unique("import-annuler"), Sense::click())
+            .interact(rc, Id::unique("import-annuler"), Sense::CLICK)
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text("Annuler le téléchargement");
         let tr = Stroke::new(1.6, if rep.hovered() { jt.texte } else { jt.doux });

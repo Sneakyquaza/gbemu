@@ -53,6 +53,8 @@ pub struct Options {
     pub recherche: Option<String>,
     pub selection: usize,
     pub grille: bool,
+    /// Robot de test (`--robot`) : ni manette réelle, ni carte son, ni programme externe.
+    pub robot: bool,
 }
 
 /// Ce qu'affiche une carte (titre, détails, clé de recherche), recalculé quand la base arrive.
@@ -149,6 +151,20 @@ pub struct App {
     clavier: Clavier,
     ecran_touches: Option<ecran_touches::EcranTouches>,
     hud: ecran_jeu::Hud,
+}
+
+/// Couche superposée (menu, fiche…) : les clics et glissers ne passent plus aux éléments
+/// dessinés dessous (bibliothèque, barre du jeu). À appeler avant les éléments de la couche.
+///
+/// Tous les éléments de l'appli sont non focalisables (`Sense::CLICK`, pas `Sense::click()`) :
+/// les touches passent par nos tables, sinon Tab y promène le focus d'egui et Entrée/Espace
+/// (Start/Select en jeu) « cliquent » l'élément focalisé (bouton pause de la barre…).
+fn bloquer_dessous(ui: &egui::Ui, couche: &str) {
+    ui.interact(
+        ui.max_rect(),
+        Id::unique(("dessous", couche)),
+        Sense::CLICK | Sense::DRAG,
+    );
 }
 
 fn reveil(ctx: &egui::Context) -> impl Fn() + Send + Sync + 'static {
@@ -264,8 +280,13 @@ fn roms_demo() -> Vec<Rom> {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, opts: Options) -> App {
-        d::installer(&cc.egui_ctx);
-        let ctx = cc.egui_ctx.clone();
+        App::creer(&cc.egui_ctx, opts)
+    }
+
+    /// Construit l'appli sur un contexte egui (fenêtre eframe, ou robot de test sans fenêtre).
+    pub fn creer(ctx: &egui::Context, opts: Options) -> App {
+        d::installer(ctx);
+        let ctx = ctx.clone();
         let chemins = Chemins::trouver(opts.donnees.clone());
         let config = Config::charger(&chemins.config());
         d::appliquer_theme(&ctx, config.jour);
@@ -785,6 +806,93 @@ fn ecrire_png(chemin: &std::path::Path, img: &ColorImage) -> std::io::Result<()>
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.image(ui);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.fermer();
+    }
+
+    fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
+        FOND.to_normalized_gamma_f32()
+    }
+}
+
+/// Partie en cours vue par le robot : sauvegarde batterie exportée, fichiers de sauvegarde et
+/// d'états, ROM.
+pub struct PartieSondee {
+    pub export: Option<Vec<u8>>,
+    pub sav: PathBuf,
+    pub etats: PathBuf,
+    pub rom: Rom,
+}
+
+/// Ce que le robot de test lit après chaque image (invariants, persistance).
+pub struct Sonde {
+    /// Couches qui reçoivent les entrées, de la plus haute à la plus basse.
+    pub couches: Vec<&'static str>,
+    pub menu_coherent: bool,
+    /// Sélection de la bibliothèque dans la vue (ou vue vide).
+    pub sel_coherente: bool,
+    pub analyse_finie: bool,
+    pub partie: Option<PartieSondee>,
+    pub jeu_au_rythme: bool,
+    pub config: String,
+    pub touches: String,
+}
+
+impl App {
+    /// Robot de test : état interne lu pour les invariants.
+    pub fn sonde(&self) -> Sonde {
+        let mut couches = Vec::new();
+        for (oui, nom) in [
+            (self.ecran_touches.is_some(), "touches"),
+            (self.menu.is_some(), "menu"),
+            (self.partie.is_some(), "partie"),
+            (self.proposition.is_some(), "proposition"),
+            (self.panneau.is_some(), "fiche"),
+        ] {
+            if oui {
+                couches.push(nom);
+            }
+        }
+        let partie = self.partie.as_ref().and_then(|p| {
+            Some(PartieSondee {
+                export: p.gb.export_save(),
+                sav: p.chemin_sav().to_path_buf(),
+                etats: p.etats.dossier().to_path_buf(),
+                rom: self.roms.iter().find(|r| r.crc == p.crc).cloned()?,
+            })
+        });
+        Sonde {
+            couches,
+            menu_coherent: self.menu_coherent(),
+            sel_coherente: self.vue.is_empty() || self.sel < self.vue.len(),
+            analyse_finie: self.analyse_finie,
+            partie,
+            jeu_au_rythme: self.jeu_au_rythme(),
+            config: serde_json::to_string(&self.config).unwrap_or_default(),
+            touches: self.touches.vers_json(),
+        }
+    }
+
+    /// Robot de test : manette virtuelle et sortie son simulée (après la 2e image).
+    pub fn robot_peripheriques(&self) -> (Option<&Manettes>, Option<&Sortie>) {
+        (self.manettes.as_ref(), self.audio.as_ref())
+    }
+
+    /// Fermeture de l'appli : sauvegarde de la partie, temps de jeu.
+    pub fn fermer(&mut self) {
+        self.fin_jeu();
+        self.hab.stats.arreter();
+        // Réglage changé sans enregistrement (curseur de volume lâché hors de la barre…) :
+        // enregistré à la fermeture, puis attente de toutes les écritures en fond.
+        self.config.enregistrer(&self.chemins.config());
+        crate::sauve::attendre_ecritures();
+    }
+
+    /// Une image d'interface (entrées, émulation, dessin).
+    pub fn image(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let maintenant = ui.input(|i| i.time);
         let dt = ((maintenant - self.t_prec) as f32).clamp(0.0, 0.1);
@@ -796,7 +904,11 @@ impl eframe::App for App {
             );
         }
         // Manettes et son ouverts après la première image : le démarrage reste instantané.
-        if self.images_ui == 2 {
+        if self.images_ui == 2 && self.opts.robot {
+            // Robot de test : manette virtuelle et sortie son simulée (consommée par le robot).
+            self.manettes = Some(Manettes::virtuelle());
+            self.audio = Some(Sortie::factice());
+        } else if self.images_ui == 2 {
             self.manettes = Some(Manettes::ouvrir(reveil(&ctx)));
             self.audio = Sortie::ouvrir();
         }
@@ -897,14 +1009,5 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
         self.capture(&ctx);
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.fin_jeu();
-        self.hab.stats.arreter();
-    }
-
-    fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
-        FOND.to_normalized_gamma_f32()
     }
 }

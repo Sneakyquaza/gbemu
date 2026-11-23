@@ -752,8 +752,9 @@ impl Touches {
             .unwrap_or_default()
     }
 
-    pub fn enregistrer(&self, chemin: &Path) -> std::io::Result<()> {
-        sauve::ecrire_atomique(chemin, self.vers_json().as_bytes())
+    /// Écriture en fond (la synchronisation disque ne fige pas l'écran des touches).
+    pub fn enregistrer(&self, chemin: &Path) {
+        sauve::ecrire_en_fond(chemin, self.vers_json().into_bytes());
     }
 
     pub fn vers_json(&self) -> String {
@@ -1139,8 +1140,9 @@ mod tests {
         let mut t = Touches::default();
         t.clavier
             .attribuer(Cible::Bouton(Bouton::Start), t_simple(Key::P));
-        t.enregistrer(&chemin).unwrap();
+        t.enregistrer(&chemin);
         assert_eq!(Touches::charger(&chemin), t);
+        sauve::attendre_ecritures();
         assert!(!chemin.with_extension("tmp").exists());
         // Fichier abîmé : la copie `.bak` reprend la main.
         std::fs::copy(&chemin, chemin.with_extension("bak")).unwrap();

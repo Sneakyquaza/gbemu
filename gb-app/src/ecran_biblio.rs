@@ -494,7 +494,7 @@ impl App {
                 g.size().x + 26.0 + pastille
             };
             let r = Rect::from_min_size(Pos2::new(x - l, cy - 17.0), Vec2::new(l, 34.0));
-            let mut rep = ui.interact(r, Id::unique(("onglet", k)), Sense::click());
+            let mut rep = ui.interact(r, Id::unique(("onglet", k)), Sense::CLICK);
             if icone_seule {
                 rep = rep.on_hover_text(*nom);
             }
@@ -575,7 +575,7 @@ impl App {
             Pos2::new(ecran.right() - 6.0, grille.bottom() - 12.0),
         );
         let barre = (max_defil > 0.0)
-            .then(|| ui.interact(piste, Id::unique("barre"), Sense::click_and_drag()));
+            .then(|| ui.interact(piste, Id::unique("barre"), Sense::CLICK | Sense::DRAG));
         if let Some(rep) = &barre {
             let (py, ph) = poignee(piste.height(), grille.height(), contenu_h, self.defil);
             if let Some(pos) = rep.interact_pointer_pos() {
@@ -674,7 +674,7 @@ impl App {
                 let f = &self.fiches[fi];
                 let rom = &self.roms[f.rom];
                 let id = Id::unique(("carte", f.rom));
-                let rep = ui.interact(r.intersect(grille), id, Sense::click());
+                let rep = ui.interact(r.intersect(grille), id, Sense::CLICK);
                 if rep.clicked() {
                     clic = Some(k);
                 }
@@ -908,7 +908,7 @@ impl App {
         // Le champ réagit à la souris : curseur texte, clic = curseur affiché (la frappe va
         // de toute façon dans la recherche), croix pour effacer.
         let rep = ui
-            .interact(rech, Id::unique("recherche"), Sense::click())
+            .interact(rech, Id::unique("recherche"), Sense::CLICK)
             .on_hover_cursor(egui::CursorIcon::Text);
         if rep.clicked() {
             self.recherche_active = true;
@@ -921,7 +921,7 @@ impl App {
         );
         if !self.recherche.is_empty() {
             let rc = ui
-                .interact(croix, Id::unique("recherche-x"), Sense::click())
+                .interact(croix, Id::unique("recherche-x"), Sense::CLICK)
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("Effacer (Échap)");
             if rc.clicked() {

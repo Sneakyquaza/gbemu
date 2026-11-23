@@ -299,13 +299,26 @@ fn analyser_7z(fichier: &Path) -> Option<Vec<Rom>> {
     Some(roms)
 }
 
+/// Taille maximale d'une cartouche (8 Mio GB/GBC, 32 Mio GBA) : au-delà, la console la refuse,
+/// inutile de la lire ou de la décompresser (une archive de 60 Mio figeait l'interface).
+fn taille_max(p: Plateforme) -> u64 {
+    match p {
+        Plateforme::Gba => 32 << 20,
+        _ => 8 << 20,
+    }
+}
+
 /// Lit les octets d'une ROM (fichier, entrée .zip ou .7z), en mémoire.
 pub fn lire_rom(rom: &Rom) -> io::Result<Vec<u8>> {
     let invalide = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
+    let max = taille_max(rom.plateforme);
     match &rom.interne {
         None => {
+            if std::fs::metadata(&rom.fichier)?.len() > max {
+                return Err(invalide("fichier trop gros"));
+            }
             let d = std::fs::read(&rom.fichier)?;
-            if d.len() as u64 > TAILLE_MAX {
+            if d.len() as u64 > max {
                 return Err(invalide("fichier trop gros"));
             }
             Ok(d)
@@ -317,8 +330,15 @@ pub fn lire_rom(rom: &Rom) -> io::Result<Vec<u8>> {
                 let e = zip
                     .by_name(nom)
                     .map_err(|_| invalide("entrée absente de l'archive"))?;
+                if e.size() > max {
+                    return Err(invalide("fichier trop gros"));
+                }
                 let mut d = Vec::new();
-                e.take(TAILLE_MAX).read_to_end(&mut d)?;
+                // Taille annoncée fausse : lecture bornée quand même.
+                e.take(max + 1).read_to_end(&mut d)?;
+                if d.len() as u64 > max {
+                    return Err(invalide("fichier trop gros"));
+                }
                 Ok(d)
             }
             Some(Genre::SeptZ) => {

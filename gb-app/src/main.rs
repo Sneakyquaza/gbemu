@@ -14,6 +14,7 @@ mod jeu;
 mod machine;
 mod manette;
 mod rembobinage;
+mod robot;
 mod sauve;
 mod screenscraper;
 mod sons_ui;
@@ -31,6 +32,10 @@ const AIDE: &str = "gbemu [--jeux DOSSIER] [--donnees DOSSIER] [--rom FICHIER.gb
 
 fn main() -> eframe::Result {
     let debut = Instant::now();
+    let tous: Vec<String> = std::env::args().skip(1).collect();
+    if tous.iter().any(|a| a == "--robot") {
+        std::process::exit(robot::principal(&tous));
+    }
     let mut opts = app::Options {
         debut,
         jeux: None,
@@ -43,6 +48,7 @@ fn main() -> eframe::Result {
         recherche: None,
         selection: 0,
         grille: false,
+        robot: false,
     };
     let mut taille = [1280.0f32, 800.0];
     let mut args = std::env::args().skip(1);
@@ -127,6 +133,10 @@ fn journal_plantage(chemin: PathBuf) {
             let _ = f.write_all(texte.as_bytes());
         }
         defaut(info);
+        // Écritures en fond (sauvegardes, réglages) menées à terme avant la sortie.
+        if std::thread::current().name() != Some("ecritures") {
+            sauve::attendre_ecritures();
+        }
     }));
 }
 

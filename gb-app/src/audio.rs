@@ -11,7 +11,8 @@ pub const FREQUENCE: u32 = 48_000;
 const TAMPON_MAX: usize = FREQUENCE as usize * 2 * 120 / 1000;
 
 pub struct Sortie {
-    _flux: cpal::Stream,
+    /// `None` : sortie simulée (robot de test), vidée par [`Sortie::consommer`].
+    _flux: Option<cpal::Stream>,
     tampon: Arc<Mutex<VecDeque<f32>>>,
     /// Levé par cpal quand la sortie disparaît (casque débranché, autre sortie par défaut).
     panne: Arc<AtomicBool>,
@@ -24,9 +25,27 @@ impl Sortie {
         let panne: Arc<AtomicBool> = Arc::default();
         let flux = ouvrir_flux(Arc::clone(&tampon), Arc::clone(&panne))?;
         Some(Sortie {
-            _flux: flux,
+            _flux: Some(flux),
             tampon,
             panne,
+        })
+    }
+
+    /// Sortie sans périphérique : le robot de test consomme le tampon au rythme du temps simulé.
+    pub fn factice() -> Sortie {
+        Sortie {
+            _flux: None,
+            tampon: Arc::default(),
+            panne: Arc::default(),
+        }
+    }
+
+    /// Retire `n` échantillons comme le ferait la carte son ; rend le nombre manquant.
+    pub fn consommer(&self, n: usize) -> usize {
+        self.tampon.lock().map_or(0, |mut t| {
+            let pris = n.min(t.len());
+            t.drain(..pris);
+            n - pris
         })
     }
 

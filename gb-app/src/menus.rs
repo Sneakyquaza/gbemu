@@ -291,7 +291,10 @@ impl App {
                 let prog = "explorer";
                 #[cfg(not(windows))]
                 let prog = "xdg-open";
-                let _ = std::process::Command::new(prog).arg(&d).spawn();
+                // Robot de test : aucun programme externe lancé.
+                if !self.opts.robot {
+                    let _ = std::process::Command::new(prog).arg(&d).spawn();
+                }
             }
             Act::OublierAjouts => {
                 self.config.ajouts.clear();
@@ -409,6 +412,13 @@ impl App {
         self.config.dossier_jeux = Some(d);
         self.config.enregistrer(&self.chemins.config());
         self.lancer_analyse(false);
+    }
+
+    /// Robot de test : menu ouvert avec une sélection valide (vrai sans menu).
+    pub(super) fn menu_coherent(&self) -> bool {
+        self.menu
+            .as_ref()
+            .is_none_or(|m| m.genre == GenreMenu::Licences || m.sel < self.elements(m.genre).len())
     }
 
     pub(super) fn basculer_plein_ecran(&self) {
@@ -547,6 +557,7 @@ impl App {
 
     pub(super) fn dessiner_menu(&mut self, ui: &mut egui::Ui) {
         let Some(m) = &self.menu else { return };
+        bloquer_dessous(ui, "menu");
         if m.genre == GenreMenu::Pause {
             self.dessiner_pause(ui);
             return;
@@ -616,7 +627,7 @@ impl App {
                 Pos2::new(r.left() + 12.0, y),
                 Vec2::new(l - 24.0, h_el - 4.0),
             );
-            let rep = ui.interact(re, Id::unique(("menu", k)), Sense::click());
+            let rep = ui.interact(re, Id::unique(("menu", k)), Sense::CLICK);
             if rep.hovered() && bouge && k != sel {
                 survol = Some(k);
             }
@@ -1086,7 +1097,7 @@ impl App {
                 Pos2::new(x0 + c as f32 * (lt + ecart), y),
                 Vec2::new(large, haute),
             );
-            let rep = ui.interact(r, Id::unique(("tuile", k)), Sense::click());
+            let rep = ui.interact(r, Id::unique(("tuile", k)), Sense::CLICK);
             if rep.hovered() && bouge && k != sel {
                 survol = Some(k);
             }

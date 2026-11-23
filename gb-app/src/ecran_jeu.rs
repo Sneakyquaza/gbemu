@@ -444,12 +444,13 @@ impl App {
         }
         let nom = format!("{} {}.png", nom_sur(&p.titre), etats::maintenant());
         let chemin = self.chemins.captures().join(&nom);
-        let r = etats::encoder_png(&rgb, (l * F) as u32, (h * F) as u32)
-            .ok_or_else(|| std::io::Error::other("encodage PNG"))
-            .and_then(|png| crate::sauve::ecrire_atomique(&chemin, &png));
-        match r {
-            Ok(()) => self.dire(format!("Capture enregistrée : captures/{nom}")),
-            Err(e) => self.dire(format!("Capture impossible : {e}")),
+        // Écriture en fond : la synchronisation disque ne fige pas l'image.
+        match etats::encoder_png(&rgb, (l * F) as u32, (h * F) as u32) {
+            Some(png) => {
+                crate::sauve::ecrire_en_fond(&chemin, png);
+                self.dire(format!("Capture enregistrée : captures/{nom}"));
+            }
+            None => self.dire("Capture impossible : encodage PNG"),
         }
     }
 
@@ -817,7 +818,7 @@ impl App {
                 Vec2::new(w, cote),
             );
             x += w + ecart;
-            let rep = ui.interact(rb, Id::unique(("barre", k)), Sense::click_and_drag());
+            let rep = ui.interact(rb, Id::unique(("barre", k)), Sense::CLICK | Sense::DRAG);
             let actif = (b == Bouton::Ecran && self.hud.ecran_ouvert)
                 || (b == Bouton::Recul && self.hud.rembobine)
                 || (b == Bouton::Vitesse && self.hud.avance_basculee);
@@ -872,7 +873,7 @@ impl App {
             Pos2::new(x + 2.0, barre.center().y - 12.0),
             Vec2::new(curseur - 10.0, 24.0),
         );
-        let rep = ui.interact(rv, Id::unique("barre-volume"), Sense::click_and_drag());
+        let rep = ui.interact(rv, Id::unique("barre-volume"), Sense::CLICK | Sense::DRAG);
         if let Some(pos) = rep
             .interact_pointer_pos()
             .filter(|_| rep.is_pointer_button_down_on())
@@ -977,7 +978,7 @@ impl App {
                 Pos2::new(r.left() + 8.0, r.top() + 8.0 + k as f32 * h_l),
                 Vec2::new(l - 16.0, h_l - 2.0),
             );
-            let rep = ui.interact(rl, Id::unique(("filtre", k)), Sense::click());
+            let rep = ui.interact(rl, Id::unique(("filtre", k)), Sense::CLICK);
             if rep.hovered() {
                 p.rect_filled(rl, CornerRadius::same(9), t.surface_haute);
             }
@@ -1104,7 +1105,7 @@ impl App {
                 ),
                 Vec2::new(lt, ht),
             );
-            let rep = ui.interact(rt, Id::unique(("etat", k)), Sense::click());
+            let rep = ui.interact(rt, Id::unique(("etat", k)), Sense::CLICK);
             let choisi = k == sel;
             let rm = Rect::from_min_size(rt.min, Vec2::new(lt, hm));
             // La case garde le fond sombre du jeu : encre de nuit dans les deux thèmes.
@@ -1308,7 +1309,7 @@ impl App {
                 Pos2::new(x, rm.top() + 72.0 + k as f32 * 54.0),
                 Vec2::new(carte.right() - 28.0 - x, 48.0),
             );
-            let rep = ui.interact(rb, Id::unique(("reprise", k)), Sense::click());
+            let rep = ui.interact(rb, Id::unique(("reprise", k)), Sense::CLICK);
             let choisi = self.hud.reprise_sel == k;
             if choisi {
                 p.rect_filled(rb, CornerRadius::same(11), t.surface_haute);
@@ -1462,6 +1463,18 @@ impl App {
             // Entrée sur un emplacement vide : on y sauve.
             self.panneau_agir(if charger_vide { PanAct::Sauver } else { a });
         }
+    }
+
+    /// Robot de test : la partie tourne à vitesse normale, son poussé (ni pause, ni carte de
+    /// reprise, ni panneau des états, ni avance rapide, ni rembobinage).
+    pub(super) fn jeu_au_rythme(&self) -> bool {
+        self.partie.as_ref().is_some_and(|p| p.reprise.is_none())
+            && self.menu.is_none()
+            && self.ecran_touches.is_none()
+            && self.hud.panneau.is_none()
+            && !self.hud.rembobine
+            && !self.hud.avance_basculee
+            && !self.action_tenue(Action::AvanceRapide)
     }
 
     /// Entrées pendant la partie (pause, raccourcis, avance rapide, rembobinage, boutons) ;

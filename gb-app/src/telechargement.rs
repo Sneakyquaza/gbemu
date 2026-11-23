@@ -103,6 +103,8 @@ struct Etat {
     id: Identifiants,
     /// File modifiée depuis le dernier enregistrement.
     sale: bool,
+    /// Propriétaire disparu (appli refermée) : le fil enregistre la file et s'arrête.
+    fin: bool,
 }
 
 pub struct Telechargeur {
@@ -116,6 +118,16 @@ pub struct Dossiers {
     pub file: PathBuf,
     pub jaquettes: PathBuf,
     pub screenscraper: PathBuf,
+}
+
+impl Drop for Telechargeur {
+    fn drop(&mut self) {
+        let (m, cv) = &*self.partage;
+        if let Ok(mut e) = m.lock() {
+            e.fin = true;
+        }
+        cv.notify_all();
+    }
 }
 
 impl Telechargeur {
@@ -133,6 +145,7 @@ impl Telechargeur {
                 file,
                 id: Identifiants::default(),
                 sale: false,
+                fin: false,
             }),
             Condvar::new(),
         ));
@@ -145,6 +158,12 @@ impl Telechargeur {
             loop {
                 let (m, cv) = &*p;
                 let Ok(mut e) = m.lock() else { return };
+                if e.fin {
+                    if e.sale {
+                        enregistrer(&d.file, &e.file);
+                    }
+                    return;
+                }
                 if e.sale && enregistre.elapsed() >= Duration::from_secs(3) {
                     enregistrer(&d.file, &e.file);
                     e.sale = false;
@@ -168,7 +187,9 @@ impl Telechargeur {
                 let Ok(mut e) = m.lock() else { return };
                 if !ok {
                     // Réseau coupé : le jeu reste en tête, nouvel essai plus tard (ou annulation).
-                    let _ = cv.wait_timeout(e, PAUSE_RESEAU);
+                    if !e.fin {
+                        let _ = cv.wait_timeout(e, PAUSE_RESEAU);
+                    }
                     continue;
                 }
                 e.file.terminer(t.crc);

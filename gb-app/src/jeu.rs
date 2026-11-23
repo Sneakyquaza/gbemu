@@ -176,7 +176,13 @@ impl Partie {
         let mut v = vitesse;
         if let (true, Some(a)) = (normale, audio) {
             let ms = a.remplissage() as f64 * 1000.0 / (2.0 * crate::audio::FREQUENCE as f64);
-            if ms < 40.0 {
+            if ms < 20.0 {
+                // Tampon presque vide (lancement, reprise, chargement d'état) : quelques images
+                // d'avance tout de suite (~40 ms), sinon la carte son lirait des trous pendant
+                // les secondes que met l'asservissement à le remplir.
+                self.accumul += ((40.0 - ms) * IPS / 1000.0).floor();
+                v = 1.005;
+            } else if ms < 40.0 {
                 v = 1.005;
             } else if ms > 80.0 {
                 v = 0.995;
@@ -200,6 +206,11 @@ impl Partie {
         if maintenant - self.t_sav >= INTERVALLE_SAUVEGARDE {
             self.t_sav = maintenant;
             self.sauver();
+            self.erreur_sav = sauve::echec_ecriture();
+            if self.erreur_sav {
+                // Écriture ratée (disque plein…) : nouvel essai au prochain passage.
+                self.derniere_sav = None;
+            }
         }
         let t_auto = *self.t_auto.get_or_insert(maintenant);
         if maintenant - t_auto >= INTERVALLE_AUTO {
@@ -238,6 +249,11 @@ impl Partie {
         }
     }
 
+    /// Fichier de la sauvegarde batterie.
+    pub fn chemin_sav(&self) -> &std::path::Path {
+        &self.chemin_sav
+    }
+
     /// Reprend le cadencement sans rattraper le temps passé en pause.
     pub fn reprendre(&mut self) {
         self.t_prec = None;
@@ -252,13 +268,9 @@ impl Partie {
         if self.derniere_sav.as_deref() == Some(&s[..]) {
             return;
         }
-        match sauve::ecrire_atomique(&self.chemin_sav, &s) {
-            Ok(()) => {
-                self.derniere_sav = Some(s);
-                self.erreur_sav = false;
-            }
-            Err(_) => self.erreur_sav = true,
-        }
+        // En fond : la synchronisation disque ne bloque jamais l'image (échec relevé plus tard).
+        sauve::ecrire_en_fond(&self.chemin_sav, s.clone());
+        self.derniere_sav = Some(s);
     }
 
     /// Avant un chargement d'état ou un rembobinage (qui réécriront la sauvegarde batterie) :
@@ -298,7 +310,6 @@ impl Partie {
                 Ok(())
             }
             Err(ErreurEmplacement::Verrouille(n)) => Err(format!("Emplacement {n} verrouillé")),
-            Err(ErreurEmplacement::Disque(e)) => Err(format!("État non écrit : {e}")),
         }
     }
 
@@ -415,6 +426,34 @@ mod tests {
         v.iter().map(|p| std::fs::read(p).unwrap()).collect()
     }
 
+    /// Robot (graine 471) : au lancement le tampon son partait de zéro et l'asservissement
+    /// (±0,5 %) mettait des secondes à le remplir, d'où des trous. Dès la 1re image : ≥ 20 ms.
+    #[test]
+    fn tampon_son_rempli_des_le_lancement() {
+        let d = DossierTest::new("son");
+        let mut p = Partie::lancer(
+            rom(&d.0),
+            "Essai".into(),
+            d.0.join("Essai [0].sav"),
+            d.0.join("etats"),
+            false,
+        )
+        .unwrap();
+        let s = Sortie::factice();
+        p.avancer(0.0, 1.0, false, Some(&s), 1.0);
+        let ms = s.remplissage() as f64 * 1000.0 / (2.0 * crate::audio::FREQUENCE as f64);
+        assert!(ms >= 20.0, "{ms} ms");
+        // Régime établi : la carte son lit 10 ms à la fois sans jamais trouver le tampon vide.
+        let mut t = 0.0;
+        for _ in 0..600 {
+            t += 1.0 / 60.0;
+            p.avancer(t, 1.0, false, Some(&s), 1.0);
+            assert_eq!(s.consommer(480), 0);
+            assert_eq!(s.consommer(480), 0);
+            s.consommer(640);
+        }
+    }
+
     #[test]
     fn sauvegarde_mise_a_l_abri_avant_chargement() {
         let d = DossierTest::new("jeu");
@@ -429,11 +468,13 @@ mod tests {
         )
         .unwrap();
         // Copie datée faite au lancement.
+        sauve::attendre_ecritures();
         assert_eq!(historique(&d.0), vec![vec![1u8; 0x2000]]);
         p.sauver_etat(1).unwrap();
         // Le jeu écrit en SRAM, puis on charge un vieil état par erreur.
         p.gb.import_save(&[2u8; 0x2000]);
         p.charger_etat(Cible::Num(1)).unwrap();
+        sauve::attendre_ecritures();
         assert_eq!(std::fs::read(&sav).unwrap(), vec![2u8; 0x2000]);
         assert_eq!(historique(&d.0).last().unwrap(), &vec![2u8; 0x2000]);
     }

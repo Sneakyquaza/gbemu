@@ -253,13 +253,8 @@ impl App {
     }
 
     fn enregistrer_touches(&mut self) {
-        if self
-            .touches
-            .enregistrer(&Touches::chemin(&self.chemins.donnees))
-            .is_err()
-        {
-            self.dire("Écriture de touches.json impossible : vérifiez le dossier gbemu-donnees");
-        }
+        self.touches
+            .enregistrer(&Touches::chemin(&self.chemins.donnees));
     }
 
     fn lignes(section: Section) -> Vec<Cible> {
@@ -542,6 +537,7 @@ impl App {
     // ----- Dessin -----
 
     pub(super) fn dessiner_touches(&mut self, ui: &mut egui::Ui) {
+        bloquer_dessous(ui, "touches");
         let ecran = ui.max_rect();
         let p = ui.painter().clone();
         let t = self.t_prec;
@@ -566,7 +562,7 @@ impl App {
         p.rect_filled(ecran, CornerRadius::ZERO, jt.fond);
         let zone_clic = |r: Rect, id: &str, c: Clic, clics: &mut Vec<Clic>| {
             if ui
-                .interact(r, Id::unique(("touches", id)), Sense::click())
+                .interact(r, Id::unique(("touches", id)), Sense::CLICK)
                 .clicked()
             {
                 clics.push(c);

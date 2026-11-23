@@ -3,7 +3,7 @@
 //! `N.mini.png` (160×144), informations `N.info.json` (date, verrou). Toutes les écritures
 //! sont atomiques ; la version précédente reste en `.bak` (annulation de la dernière sauvegarde).
 
-use crate::sauve::ecrire_atomique;
+use crate::sauve::{attendre_ecritures_de, ecrire_groupe_en_fond, existe, lire_fichier};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -40,7 +40,6 @@ pub struct Info {
 #[derive(Debug)]
 pub enum ErreurEmplacement {
     Verrouille(usize),
-    Disque(io::Error),
 }
 
 pub struct Etats {
@@ -88,6 +87,15 @@ impl Etats {
         Etats { dossier }
     }
 
+    /// Écritures en attente des fichiers de l'emplacement menées à terme (avant renommage).
+    fn attendre(&self, c: Cible) {
+        attendre_ecritures_de(&[self.etat(c), self.mini(c), self.infos(c)]);
+    }
+
+    pub fn dossier(&self) -> &Path {
+        &self.dossier
+    }
+
     fn fichier(&self, c: Cible, ext: &str) -> PathBuf {
         self.dossier.join(format!("{}.{ext}", c.nom()))
     }
@@ -106,12 +114,11 @@ impl Etats {
 
     /// Informations d'un emplacement occupé (`None` : vide).
     pub fn info(&self, c: Cible) -> Option<Info> {
-        if !self.etat(c).is_file() {
+        if !existe(&self.etat(c)) {
             return None;
         }
         Some(
-            std::fs::read(self.infos(c))
-                .ok()
+            lire_fichier(&self.infos(c))
                 .and_then(|d| serde_json::from_slice(&d).ok())
                 .unwrap_or_default(),
         )
@@ -119,11 +126,11 @@ impl Etats {
 
     /// Données de l'état (pas de repli sur `.bak` : un emplacement supprimé reste vide).
     pub fn lire(&self, c: Cible) -> Option<Vec<u8>> {
-        std::fs::read(self.etat(c)).ok()
+        lire_fichier(&self.etat(c))
     }
 
     pub fn lire_mini(&self, c: Cible) -> Option<Vec<u8>> {
-        std::fs::read(self.mini(c)).ok()
+        lire_fichier(&self.mini(c))
     }
 
     /// Écrit un état et sa miniature. Un emplacement verrouillé est refusé sauf `forcer`.
@@ -143,16 +150,19 @@ impl Etats {
             verrou: ancienne.is_some_and(|i| i.verrou),
         };
         let json = serde_json::to_vec(&info).unwrap_or_default();
-        // L'état d'abord : s'il échoue (disque plein), la case garde son ancienne miniature et sa
-        // date, cohérentes avec l'ancien état.
-        ecrire_atomique(&self.etat(c), etat).map_err(ErreurEmplacement::Disque)?;
+        // Écritures en fond, dans l'ordre : l'état d'abord. Échec (disque plein) signalé par
+        // `sauve::echec_ecriture`.
+        let mut fichiers = vec![(self.etat(c), etat.to_vec())];
         if !mini.is_empty() {
-            ecrire_atomique(&self.mini(c), mini).map_err(ErreurEmplacement::Disque)?;
+            fichiers.push((self.mini(c), mini.to_vec()));
         }
-        ecrire_atomique(&self.infos(c), &json).map_err(ErreurEmplacement::Disque)
+        fichiers.push((self.infos(c), json));
+        ecrire_groupe_en_fond(fichiers);
+        Ok(())
     }
 
     pub fn verrouiller(&self, c: Cible, verrou: bool) -> io::Result<()> {
+        self.attendre(c);
         let mut info = self.info(c).unwrap_or_default();
         info.verrou = verrou;
         let json = serde_json::to_vec(&info).unwrap_or_default();
@@ -166,18 +176,28 @@ impl Etats {
     /// Retour à la version d'avant la dernière sauvegarde de l'emplacement (fichiers `.bak`) ;
     /// relancé une seconde fois, rétablit la sauvegarde annulée. Faux s'il n'y a rien à annuler.
     pub fn annuler_sauvegarde(&self, c: Cible) -> io::Result<bool> {
+        self.attendre(c);
         let bak = |p: &Path| p.with_extension("bak");
         let e = self.etat(c);
-        let Ok(ancien) = std::fs::read(bak(&e)) else {
+        if !bak(&e).is_file() {
             return Ok(false);
-        };
+        }
         let verrou = self.info(c).is_some_and(|i| i.verrou);
-        for f in [self.mini(c), self.infos(c)] {
-            if let Ok(d) = std::fs::read(bak(&f)) {
-                ecrire_atomique(&f, &d)?;
+        // Échange par renommages (rien à réécrire ni à synchroniser) : l'état d'abord.
+        for f in [e, self.mini(c), self.infos(c)] {
+            if !bak(&f).is_file() {
+                continue;
+            }
+            let tmp = f.with_extension("echange.tmp");
+            let present = f.is_file();
+            if present {
+                std::fs::rename(&f, &tmp)?;
+            }
+            std::fs::rename(bak(&f), &f)?;
+            if present {
+                std::fs::rename(&tmp, bak(&f))?;
             }
         }
-        ecrire_atomique(&e, &ancien)?;
         if verrou {
             self.verrouiller(c, true)?;
         }
@@ -186,6 +206,7 @@ impl Etats {
 
     /// Vide un emplacement sans rien détruire : les fichiers sont renommés en `.suppr`.
     pub fn supprimer(&self, c: Cible) -> io::Result<()> {
+        self.attendre(c);
         for f in [self.etat(c), self.mini(c), self.infos(c)] {
             if f.exists() {
                 std::fs::rename(&f, f.with_extension("suppr"))?;
@@ -236,6 +257,7 @@ mod tests {
         let e = Etats::new(d.0.clone());
         e.ecrire(Cible::Num(3), b"ancien", b"m1", false).unwrap();
         e.ecrire(Cible::Num(3), b"nouveau", b"m2", false).unwrap();
+        crate::sauve::attendre_ecritures();
         // Aucun fichier temporaire ne traîne.
         let restes: Vec<_> = std::fs::read_dir(&d.0)
             .unwrap()
@@ -271,7 +293,8 @@ mod tests {
         let date = e.info(Cible::Num(2)).unwrap().date;
         // Un dossier à la place du fichier d'état : son écriture échoue.
         std::fs::create_dir_all(d.0.join("7.state")).unwrap();
-        assert!(e.ecrire(Cible::Num(7), b"x", b"m", false).is_err());
+        e.ecrire(Cible::Num(7), b"x", b"m", false).unwrap();
+        crate::sauve::attendre_ecritures();
         assert!(!d.0.join("7.mini.png").exists() && !d.0.join("7.info.json").exists());
         assert_eq!(e.info(Cible::Num(2)).unwrap().date, date);
     }
