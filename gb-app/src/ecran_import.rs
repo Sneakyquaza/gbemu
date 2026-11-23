@@ -7,7 +7,6 @@ use crate::jaquettes;
 use crate::sauve::NouveauxJeux;
 use crate::sons_ui::Son;
 use crate::telechargement::Tache;
-use std::cell::RefCell;
 use std::sync::mpsc;
 
 pub(super) struct Proposition {
@@ -21,12 +20,6 @@ const CHOIX: [&str; 3] = ["Oui", "Plus tard", "Ne plus demander"];
 
 /// Touches ignorées juste après l'ouverture de la question (frappe de recherche en cours).
 const GARDE_TOUCHES: f64 = 0.3;
-
-thread_local! {
-    /// Tâches manquantes en cours de calcul (accès disque par jeu, hors du fil de l'interface).
-    /// raccourci : par fil plutôt que champ d'`App` (app.rs hors du lot), à déplacer dans `App`.
-    static CALCUL: RefCell<Option<mpsc::Receiver<Vec<Tache>>>> = const { RefCell::new(None) };
-}
 
 /// CRC des jeux de `apres` absents de `avant` (jeux ajoutés depuis la dernière analyse).
 pub(super) fn nouveaux(avant: &[Rom], apres: &[Rom]) -> Vec<u32> {
@@ -65,27 +58,24 @@ impl App {
     /// Nouveaux jeux et base prêts : cherche en fond ceux à qui il manque quelque chose, puis
     /// propose (ou lance, selon le réglage) leur téléchargement.
     fn preparer_proposition(&mut self) {
-        let fini = CALCUL.with_borrow_mut(|c| {
-            let r = c.as_ref()?.try_recv();
-            match r {
-                Ok(t) => {
-                    *c = None;
-                    Some(t)
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    *c = None;
-                    None
-                }
-                Err(mpsc::TryRecvError::Empty) => None,
+        let fini = match self.calcul_import.as_ref().map(|c| c.try_recv()) {
+            Some(Ok(t)) => {
+                self.calcul_import = None;
+                Some(t)
             }
-        });
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                self.calcul_import = None;
+                None
+            }
+            _ => None,
+        };
         if let Some(taches) = fini {
             self.proposer(taches);
         }
         if self.nouveaux.is_empty()
             || self.base.is_none()
             || self.proposition.is_some()
-            || CALCUL.with_borrow(|c| c.is_some())
+            || self.calcul_import.is_some()
         {
             return;
         }
@@ -125,7 +115,7 @@ impl App {
                 r();
             }
         });
-        CALCUL.with_borrow_mut(|c| *c = Some(rx));
+        self.calcul_import = Some(rx);
     }
 
     fn proposer(&mut self, taches: Vec<Tache>) {

@@ -344,6 +344,12 @@ impl App {
         }
     }
 
+    /// Capture (`--menu filtre`) : fiche ouverte puis « Même éditeur ».
+    pub(super) fn filtrer_editeur(&mut self) {
+        self.ouvrir_fiche();
+        self.agir_fiche(ActFiche::Filtre(Champ::Editeur));
+    }
+
     /// Jeu précédent / suivant de la bibliothèque, sans fermer la fiche.
     fn fiche_voisine(&mut self, sens: i32) {
         let n = self.vue.len();
@@ -434,16 +440,15 @@ impl App {
     }
 
     /// Filtre actif, dans le pied de la bibliothèque : pastille cliquable pour le retirer.
+    /// Renvoie son bord gauche.
     pub(super) fn dessiner_filtre_meta(
         &mut self,
         ui: &egui::Ui,
         p: &egui::Painter,
         droite: f32,
         y: f32,
-    ) {
-        let Some((c, v)) = &self.filtre_meta else {
-            return;
-        };
+    ) -> Option<f32> {
+        let (c, v) = self.filtre_meta.as_ref()?;
         let jt = j();
         let g = ligne(p, &format!("{} : {v}", c.nom()), moyen(13.5), jt.texte);
         let gs = g.size();
@@ -478,6 +483,7 @@ impl App {
         if rep.clicked() {
             self.retirer_filtre_meta();
         }
+        Some(r.left())
     }
 
     /// Texture chargée (et notée vue, pour ne pas être libérée pendant l'affichage).
@@ -820,8 +826,30 @@ impl App {
         y += faits.len().div_ceil(2) as f32 * 48.0 + 8.0;
 
         // Actions en bas ; écrans et résumé se partagent la place entre les deux.
+        // Boutons sur plusieurs lignes si la fenêtre est étroite : aucun n'est masqué.
         let hb = 44.0;
-        let yb = droite.bottom() - hb;
+        let mut places = Vec::with_capacity(boutons.len());
+        let (mut xb, mut rang) = (droite.left(), 0usize);
+        for (lib, act) in &boutons {
+            let ic = match act {
+                ActFiche::Jouer => Some(Icone::Jouer),
+                ActFiche::Favori => Some(if jeu.favori {
+                    Icone::Etoile
+                } else {
+                    Icone::EtoileVide
+                }),
+                ActFiche::Filtre(_) | ActFiche::Telecharger => None,
+            };
+            let g = ligne(&pc, lib, moyen(14.5), jt.texte);
+            let lb = g.size().x + 32.0 + if ic.is_some() { 22.0 } else { 0.0 };
+            if xb + lb > droite.right() && xb > droite.left() {
+                rang += 1;
+                xb = droite.left();
+            }
+            places.push((Pos2::new(xb, rang as f32 * (hb + 10.0)), lb, ic));
+            xb += lb + 10.0;
+        }
+        let yb = droite.bottom() - hb - rang as f32 * (hb + 10.0);
         // Résumé : Wikipédia en français, sinon ScreenScraper, sinon Wikipédia en anglais.
         let wiki = info.as_ref().filter(|i| !i.resume.is_empty()).map(|i| {
             (
@@ -852,7 +880,11 @@ impl App {
         let place = yb - 20.0 - y;
         let h_ecrans_voulu = (place * 0.62).clamp(90.0, 230.0);
         if let Some(texte) = resume {
-            let lignes = (((place - h_ecrans_voulu - 16.0) / 21.0).floor() as usize).clamp(1, 6);
+            // Au moins 4 lignes de résumé (les écrans cèdent la place), sans toucher aux boutons.
+            let tient = ((place - 16.0) / 21.0).floor().max(1.0) as usize;
+            let lignes = (((place - h_ecrans_voulu - 16.0) / 21.0).floor() as usize)
+                .clamp(4, 6)
+                .min(tient);
             let g = bloc(&pc, &texte, regulier(14.5), jt.doux, ld.min(680.0), lignes);
             let gs = g.size();
             pc.galley(Pos2::new(droite.left(), y), g, jt.doux);
@@ -919,25 +951,10 @@ impl App {
         }
 
         // Boutons : Jouer en accent, les autres en pastilles discrètes.
-        let mut x = droite.left();
         let mut clic = None;
-        for (k, (lib, act)) in boutons.iter().enumerate() {
+        for (k, ((lib, act), &(pos, lb, ic))) in boutons.iter().zip(&places).enumerate() {
             let principal = *act == ActFiche::Jouer;
-            let ic = match act {
-                ActFiche::Jouer => Some(Icone::Jouer),
-                ActFiche::Favori => Some(if jeu.favori {
-                    Icone::Etoile
-                } else {
-                    Icone::EtoileVide
-                }),
-                ActFiche::Filtre(_) | ActFiche::Telecharger => None,
-            };
-            let g = ligne(&pc, lib, moyen(14.5), jt.texte);
-            let lb = g.size().x + 32.0 + if ic.is_some() { 22.0 } else { 0.0 };
-            if x + lb > droite.right() {
-                break;
-            }
-            let rb = Rect::from_min_size(Pos2::new(x, yb), Vec2::new(lb, hb));
+            let rb = Rect::from_min_size(Pos2::new(pos.x, yb + pos.y), Vec2::new(lb, hb));
             let rep = ui
                 .interact(rb, Id::unique(("fiche-bouton", k)), Sense::CLICK)
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -986,7 +1003,6 @@ impl App {
             if rep.clicked() {
                 clic = Some((k, *act));
             }
-            x += lb + 10.0;
         }
 
         // Raccourcis de la fiche à la place de ceux de la bibliothèque (pied recouvert).

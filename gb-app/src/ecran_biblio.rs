@@ -810,8 +810,8 @@ impl App {
         };
         // Pastille de droite d'abord : les aides qui ne tiennent pas à sa gauche sont masquées.
         let mut limite = ecran.right() - MARGE;
-        let occupe = if self.filtre_meta.is_some() {
-            self.dessiner_filtre_meta(ui, &p, limite, yp);
+        let occupe = if let Some(g) = self.dessiner_filtre_meta(ui, &p, limite, yp) {
+            limite = g - 22.0;
             true
         } else if let Some(g) = self.dessiner_telechargement(ui, &p, limite, yp) {
             limite = g - 22.0;

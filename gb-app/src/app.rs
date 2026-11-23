@@ -128,6 +128,8 @@ pub struct App {
     nouveaux: Vec<u32>,
     /// « Télécharger les infos et images de N jeux ? » affiché.
     proposition: Option<ecran_import::Proposition>,
+    /// Jeux ajoutés à qui il manque une vignette, en cours de calcul (disque, hors de l'interface).
+    calcul_import: Option<Receiver<Vec<crate::telechargement::Tache>>>,
     /// Mise à jour en ligne de la base demandée (message à son arrivée).
     maj_base: bool,
 
@@ -330,6 +332,7 @@ impl App {
             tele: None,
             nouveaux: Vec::new(),
             proposition: None,
+            calcul_import: None,
             maj_base: false,
             partie: None,
             debut_partie: 0.0,
@@ -751,6 +754,13 @@ impl App {
             self.ouvrir_fiche();
             self.images_menu = self.images_ui;
         }
+        // Filtre « Même éditeur » du jeu sélectionné (pastille du pied).
+        if self.opts.menu.as_deref() == Some("filtre") && self.analyse_finie && !self.vue.is_empty()
+        {
+            self.opts.menu = None;
+            self.filtrer_editeur();
+            self.images_menu = self.images_ui;
+        }
         // Menu pause : ouvert une fois l'image du jeu stable, capturé après son animation.
         if jeu_pret && self.partie.is_some() && self.opts.menu.as_deref() == Some("pause") {
             self.opts.menu = None;
@@ -766,7 +776,7 @@ impl App {
             && self.analyse_finie
             && !matches!(
                 self.opts.menu.as_deref(),
-                Some("pause" | "fiche" | "import-oui")
+                Some("pause" | "fiche" | "filtre" | "import-oui")
             )
             && (self.opts.menu.as_deref() != Some("import") || self.proposition.is_some())
             && (jeu_pret || self.menu.is_some())
