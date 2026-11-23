@@ -11,6 +11,7 @@ const file = { blocs: [], pos: 0, g: 0, d: 0 };
 
 let volume = 0.8;
 let coupe = false;
+let enAvance = false;
 
 export function frequence() {
   return ctx ? ctx.sampleRate : 0;
@@ -24,8 +25,15 @@ export function correction() {
   return 1 + Math.max(-0.005, Math.min(0.005, e * 0.005));
 }
 
+// Fondu court (~15 ms) : ni craquement en coupant le son, ni en le remettant.
 function appliquerVolume() {
-  if (gain) gain.gain.value = coupe ? 0 : volume * volume;
+  if (gain) gain.gain.setTargetAtTime(coupe || enAvance ? 0 : volume * volume, ctx.currentTime, 0.015);
+}
+
+// Avance rapide : son coupé (comme sur PC).
+export function avance(oui) {
+  enAvance = oui;
+  appliquerVolume();
 }
 
 export function reglerVolume(v, c) {

@@ -24,10 +24,13 @@ const tactile = matchMedia("(pointer: coarse)").matches;
 
 // ---------- Réglages (confort par appareil) ----------
 
-const reglages = { volume: 80, coupe: false, astuce: false };
+// vitesse : avance rapide (0 = Max, le plus vite que l'appareil permet).
+const VITESSES = [1.5, 2, 3, 4, 6, 8, 0];
+const reglages = { volume: 80, coupe: false, astuce: false, vitesse: 4 };
 try {
   Object.assign(reglages, JSON.parse(localStorage.getItem("gbemu-reglages") || "{}"));
 } catch {}
+if (!VITESSES.includes(reglages.vitesse)) reglages.vitesse = 4;
 function garderReglages() {
   try {
     localStorage.setItem("gbemu-reglages", JSON.stringify(reglages));
@@ -386,7 +389,7 @@ majAstuce();
 // ---------- Partie ----------
 
 let partie = null;
-const commandes = new Commandes($("jeu"), () => basculerPause());
+const commandes = new Commandes($("jeu"), () => basculerPause(), () => basculerAvance());
 const toile = $("ecran");
 const ctx2d = toile.getContext("2d", { alpha: false });
 
@@ -426,6 +429,10 @@ async function lancer(id) {
     acc: 0,
     dernier: performance.now(),
     pause: false,
+    // avance : basculée (bouton, Maj+Tab) ; enAvance : appliquée (basculée ou maintenue).
+    avance: false,
+    enAvance: false,
+    images: 0,
     raf: 0,
     // Dernière sauvegarde écrite, pour n'écrire que ce qui change.
     sav: sav ? sav.data : emu.sauvegarde(),
@@ -451,8 +458,13 @@ async function lancer(id) {
   partie.raf = requestAnimationFrame(boucle);
 }
 
+// Budget de calcul par rafraîchissement en avance rapide : au-delà, le retard est abandonné
+// (l'avance ralentit si l'appareil ne suit pas, l'interface ne fige jamais).
+const BUDGET_AVANCE = 10; // ms
+
 // Cadence de la console indépendante de l'écran : accumulateur, au plus 3 images par
 // rafraîchissement, retard au-delà abandonné. Asservie (±0,5 %) au niveau de la file son.
+// En avance rapide : vitesse du réglage, son coupé, bornée par BUDGET_AVANCE.
 function boucle(t) {
   const p = partie;
   if (!p) return;
@@ -461,7 +473,12 @@ function boucle(t) {
   p.dernier = t;
   if (p.pause) return;
   if (dt > 250) dt = 250;
-  p.acc += (dt / 1000) * p.hz * son.correction();
+  const boutons = commandes.lire();
+  majAvance(p, p.avance || commandes.avance());
+  const avance = p.enAvance;
+  if (!avance) p.acc += (dt / 1000) * p.hz * son.correction();
+  else p.acc = reglages.vitesse ? p.acc + (dt / 1000) * p.hz * reglages.vitesse : Infinity;
+  const debut = performance.now();
   try {
     const f = son.frequence();
     if (f && f !== p.freq) {
@@ -471,18 +488,49 @@ function boucle(t) {
       son.vider();
     }
     let n = 0;
-    while (p.acc >= 1 && n < 3) {
-      p.emu.set_boutons(commandes.lire());
+    while (p.acc >= 1 && (avance || n < 3)) {
+      p.emu.set_boutons(boutons);
       p.emu.run_frame();
-      son.pousser(p.emu.echantillons());
+      const ech = p.emu.echantillons();
+      if (!avance) son.pousser(ech);
       p.acc -= 1;
       n++;
+      if (avance && performance.now() - debut > BUDGET_AVANCE) break;
     }
-    if (p.acc > 2) p.acc = 0;
+    p.images += n;
+    if (p.acc > (avance ? 1 : 2)) p.acc = 0;
     if (n) dessiner(p);
   } catch (e) {
     planter(e);
   }
+}
+
+// Compteur d'images émulées (mesure de vitesse dans les tests).
+window.gbemuImages = () => (partie ? partie.images : 0);
+
+// Avance rapide appliquée ou non : son coupé en fondu (comme sur PC, sans craquement), bouton
+// allumé et vitesse sur l'écran.
+function majAvance(p, oui) {
+  if (oui === p.enAvance) return;
+  p.enAvance = oui;
+  son.avance(oui);
+  if (!oui) {
+    // File son vide en sortie : ~50 ms d'avance tout de suite, sinon trous à la reprise.
+    son.vider();
+    p.acc = 3;
+  }
+  const v = reglages.vitesse;
+  $("avance-indic").textContent = v ? "×" + String(v).replace(".", ",") : "Max";
+  $("avance-indic").hidden = !oui;
+  $("b-avance").classList.toggle("allumee", oui);
+  $("b-avance").setAttribute("aria-pressed", oui);
+}
+
+function basculerAvance() {
+  const p = partie;
+  if (!p || p.pause) return;
+  p.avance = !p.avance;
+  majAvance(p, p.avance || commandes.avance());
 }
 
 function dessiner(p) {
@@ -552,6 +600,8 @@ function basculerPause(forcer) {
   p.pause = pause;
   commandes.relacher();
   if (pause) {
+    p.avance = false;
+    majAvance(p, false);
     sauverBatterie();
     son.suspendre();
     $("m-charger-date").textContent = "";
@@ -571,6 +621,7 @@ function basculerPause(forcer) {
 }
 
 $("b-pause").addEventListener("click", () => basculerPause(true));
+$("b-avance").addEventListener("click", () => basculerAvance());
 $("m-reprendre").addEventListener("click", () => basculerPause(false));
 $("m-son").addEventListener("click", () => {
   reglages.coupe = !reglages.coupe;
@@ -619,6 +670,7 @@ function arreter() {
   clearInterval(p.minuteur);
   commandes.actif = false;
   commandes.relacher();
+  majAvance(p, false);
   son.vider();
   son.suspendre();
   if (p.verrou) p.verrou.release().catch(() => {});
@@ -667,6 +719,7 @@ document.addEventListener("keydown", premierGeste, { once: true });
 $("b-reglages").addEventListener("click", async () => {
   $("r-volume").value = reglages.volume;
   $("r-coupe").checked = reglages.coupe;
+  $("r-vitesse").value = reglages.vitesse;
   $("r-message").textContent = "";
   $("r-espace").textContent = "Tes jeux et sauvegardes restent sur cet appareil.";
   ouvrirVoile($("reglages"));
@@ -688,6 +741,10 @@ $("r-coupe").addEventListener("change", (e) => {
   reglages.coupe = e.target.checked;
   garderReglages();
   appliquerSon();
+});
+$("r-vitesse").addEventListener("change", (e) => {
+  reglages.vitesse = +e.target.value;
+  garderReglages();
 });
 
 $("r-exporter").addEventListener("click", async () => {

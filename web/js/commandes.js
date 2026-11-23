@@ -1,5 +1,6 @@
 // Entrées : commandes tactiles multitouch (croix à 8 directions qu'on glisse, A/B qu'on peut
-// enchaîner du doigt), clavier et manette (Gamepad API). Rend le masque des boutons tenus.
+// enchaîner du doigt), clavier et manette (Gamepad API). Rend le masque des boutons tenus
+// et l'avance rapide maintenue (Tab, gâchette R2 ; Maj+Tab bascule, comme sur PC).
 
 export const B = {
   DROITE: 0x01,
@@ -35,6 +36,7 @@ const CLAVIER = {
 };
 
 // Manette « standard » : Est/Nord = A, Sud/Ouest = B (positionnel, comme sur PC).
+// L1/R1 = L/R de la GBA, R2 (7) = avance rapide maintenue (L2 : rembobinage sur PC, absent ici).
 const MANETTE = [
   [0, B.B],
   [1, B.A],
@@ -42,8 +44,6 @@ const MANETTE = [
   [3, B.A],
   [4, B.L],
   [5, B.R],
-  [6, B.L],
-  [7, B.R],
   [8, B.SELECT],
   [9, B.START],
   [12, B.HAUT],
@@ -56,9 +56,12 @@ const MARGE = 14; // px ajoutés autour des boutons pour le toucher
 const MARGE_CROIX = 28;
 
 export class Commandes {
-  constructor(zone, surPause) {
+  constructor(zone, surPause, surAvance) {
     this.zone = zone;
     this.surPause = surPause;
+    this.surAvance = surAvance;
+    this.tab = false;
+    this.r2 = false;
     this.doigts = new Map(); // pointerId -> { croix: bool, bits }
     this.clavier = 0;
     this.tactile = 0;
@@ -166,6 +169,13 @@ export class Commandes {
       if (bas && !e.repeat) this.surPause();
       return;
     }
+    if (k === "tab") {
+      e.preventDefault();
+      if (bas && e.shiftKey) {
+        if (!e.repeat) this.surAvance();
+      } else this.tab = bas;
+      return;
+    }
     const bit = CLAVIER[k];
     if (!bit) return;
     e.preventDefault();
@@ -175,9 +185,11 @@ export class Commandes {
   manette() {
     if (!navigator.getGamepads) return 0;
     let m = 0;
+    this.r2 = false;
     for (const p of navigator.getGamepads()) {
       if (!p || !p.connected) continue;
       for (const [i, bit] of MANETTE) if (p.buttons[i] && p.buttons[i].pressed) m |= bit;
+      if (p.buttons[7] && p.buttons[7].pressed) this.r2 = true;
       const [ax = 0, ay = 0] = p.axes;
       if (ax < -0.5) m |= B.GAUCHE;
       if (ax > 0.5) m |= B.DROITE;
@@ -198,9 +210,16 @@ export class Commandes {
     return m;
   }
 
+  // Avance rapide maintenue (à lire après lire(), qui relève la manette).
+  avance() {
+    return this.tab || this.r2;
+  }
+
   relacher() {
     this.doigts.clear();
     this.clavier = 0;
+    this.tab = false;
+    this.r2 = false;
     this.tactile = 0;
     this.afficher(0);
   }

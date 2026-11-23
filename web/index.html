@@ -69,13 +69,18 @@
 
 <section id="jeu" class="vue jeu" hidden aria-label="Partie">
   <div class="ecran-zone">
-    <div class="ecran-cadre"><canvas id="ecran" width="160" height="144"></canvas></div>
+    <div class="ecran-cadre"><canvas id="ecran" width="160" height="144"></canvas><span id="avance-indic" class="avance-indic" hidden></span></div>
   </div>
   <div class="epaule l" data-b="l">L</div>
   <div class="epaule r" data-b="r">R</div>
-  <button id="b-pause" class="pause" type="button" data-hors-commandes aria-label="Pause">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg>
-  </button>
+  <div class="centre">
+    <button id="b-pause" class="pause" type="button" data-hors-commandes aria-label="Pause">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg>
+    </button>
+    <button id="b-avance" class="pause avance" type="button" data-hors-commandes aria-label="Avance rapide" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l7 5-7 5zM13 7l7 5-7 5z"/></svg>
+    </button>
+  </div>
   <div class="croix" data-croix aria-hidden="true">
     <span class="branche h"></span><span class="branche v"></span><span class="moyeu"></span>
   </div>
@@ -108,6 +113,21 @@
       <h3>Son</h3>
       <label class="ligne"><span>Volume</span><input id="r-volume" type="range" min="0" max="100" step="1"></label>
       <label class="ligne"><span>Son coupé</span><input id="r-coupe" type="checkbox" class="bascule"></label>
+    </section>
+    <section class="groupe">
+      <h3>Jeu</h3>
+      <label class="ligne"><span>Vitesse d'avance rapide</span>
+        <select id="r-vitesse" class="champ">
+          <option value="1.5">×1,5</option>
+          <option value="2">×2</option>
+          <option value="3">×3</option>
+          <option value="4">×4</option>
+          <option value="6">×6</option>
+          <option value="8">×8</option>
+          <option value="0">Max</option>
+        </select>
+      </label>
+      <p class="sous">Bouton à côté de la pause, touche Tab maintenue sur clavier, gâchette R2 sur manette. Son coupé pendant l'avance.</p>
     </section>
     <section class="groupe">
       <h3>Sauvegardes</h3>
