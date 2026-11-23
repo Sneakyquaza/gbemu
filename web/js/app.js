@@ -147,6 +147,15 @@ function dessinerBiblio() {
   $("vide").hidden = jeux.length > 0;
   $("aucun").hidden = jeux.length === 0 || liste.length > 0;
   $("recherche").parentElement.classList.toggle("sans-jeux", jeux.length === 0);
+  // Jeux libres : dépliés quand la bibliothèque est vide, repliés (discrets) sinon.
+  if (!jeux.length) $("libres").open = true;
+  for (const b of document.querySelectorAll("[data-libre]")) {
+    const deja = jeux.some((j) => j.id === b.dataset.libre);
+    if (deja || !b.dataset.occupe) {
+      b.disabled = deja;
+      b.textContent = deja ? "Déjà ajouté" : "Ajouter";
+    }
+  }
 }
 
 $("recherche").addEventListener("input", dessinerBiblio);
@@ -179,6 +188,104 @@ function demanderSuppression(id) {
   };
 }
 $("c-non").addEventListener("click", () => ($("confirmer").hidden = true));
+
+// Ajoute une ROM (empreinte, IndexedDB) : "ajoute", "deja" ou "ignore".
+async function ajouterRom(nom, octets, connus) {
+  let info;
+  try {
+    info = analyser_rom(nom, octets);
+  } catch {
+    return "ignore";
+  }
+  const id = hex(info.crc);
+  if (connus.has(id)) {
+    info.free();
+    return "deja";
+  }
+  const jeu = { id, nom, titre: info.titre, console: info.console, taille: octets.length, ajoute: Date.now(), joue: 0 };
+  info.free();
+  try {
+    await S.ajouterJeu(jeu, octets);
+    connus.add(id);
+    jeux.push(jeu);
+    return "ajoute";
+  } catch (err) {
+    toast("Espace insuffisant ou stockage refusé : " + err.message);
+    return "ignore";
+  }
+}
+
+// Jeux libres à essayer : servis par le site (jeux-libres/, voir scripts/web.sh), crc = empreinte
+// de la bibliothèque.
+const LIBRES = [
+  {
+    fichier: "libbet.gb", crc: "7a9dea01", nom: "Libbet and the Magic Floor", console: "gbc", // .gb compatible couleur (0x143 = 0x80)
+    phrase: "Réflexion : un sol magique dont il faut retourner toutes les dalles, un casse-tête par niveau.",
+    auteur: "Damian Yerrick", licence: "zlib", texte: "libbet-zlib.txt", source: "https://github.com/pinobatch/libbet",
+  },
+  {
+    fichier: "ucity.gbc", crc: "e044d080", nom: "µCity", console: "gbc",
+    phrase: "Construction de ville : routes, quartiers, budget et catastrophes, en Game Boy Color.",
+    auteur: "Antonio Niño Díaz", licence: "GPL-3.0", texte: "ucity-GPL-3.0.txt", source: "https://github.com/AntonioND/ucity",
+  },
+];
+
+function lien(url, texte) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.textContent = texte;
+  if (url.startsWith("http")) {
+    a.target = "_blank";
+    a.rel = "noopener";
+  }
+  return a;
+}
+
+$("libres-liste").replaceChildren(
+  ...LIBRES.map((l) => {
+    const li = document.createElement("li");
+    li.className = "libre";
+    const titre = document.createElement("h3");
+    const puce = document.createElement("span");
+    puce.className = "puce " + l.console;
+    puce.textContent = COURT[l.console];
+    puce.title = CONSOLES[l.console];
+    titre.append(l.nom, " ", puce);
+    const phrase = document.createElement("p");
+    phrase.textContent = l.phrase;
+    const credit = document.createElement("p");
+    credit.className = "sous";
+    credit.append(l.auteur + ", licence ", lien(l.source, l.licence), " (", lien("jeux-libres/" + l.texte, "texte"), ")");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "bouton";
+    b.dataset.libre = l.crc;
+    b.textContent = "Ajouter";
+    b.addEventListener("click", () => ajouterLibre(l, b));
+    li.append(titre, phrase, credit, b);
+    return li;
+  }),
+);
+
+async function ajouterLibre(l, b) {
+  b.disabled = true;
+  b.dataset.occupe = "1";
+  b.textContent = "Téléchargement…";
+  try {
+    const rep = await fetch("jeux-libres/" + l.fichier);
+    if (!rep.ok) throw new Error("réponse " + rep.status);
+    const octets = new Uint8Array(await rep.arrayBuffer());
+    await pret;
+    S.demanderPersistance();
+    const r = await ajouterRom(l.nom + "." + extension(l.fichier), octets, new Set(jeux.map((j) => j.id)));
+    if (r === "ajoute") toast(l.nom + " ajouté");
+    else if (r === "ignore") toast("Fichier reçu illisible, réessaie plus tard");
+  } catch {
+    toast("Téléchargement impossible : vérifie la connexion et réessaie");
+  }
+  delete b.dataset.occupe;
+  dessinerBiblio();
+}
 
 // Ajout : ROM en vrac, .zip, et .sav au passage.
 $("f-roms").addEventListener("change", async (e) => {
@@ -213,29 +320,12 @@ $("f-roms").addEventListener("change", async (e) => {
         sauvegardes.push(x);
         continue;
       }
-      let info;
-      try {
-        info = analyser_rom(x.nom, x.octets);
-      } catch {
-        ignores++;
-        continue;
-      }
-      const id = hex(info.crc);
-      if (connus.has(id)) {
-        deja++;
-        continue;
-      }
-      const jeu = { id, nom: x.nom, titre: info.titre, console: info.console, taille: x.octets.length, ajoute: Date.now(), joue: 0 };
-      info.free();
-      try {
-        await S.ajouterJeu(jeu, x.octets);
-        connus.add(id);
-        jeux.push(jeu);
+      const r = await ajouterRom(x.nom, x.octets, connus);
+      if (r === "deja") deja++;
+      else if (r === "ignore") ignores++;
+      else {
         ajoutes++;
         etat.textContent = `${ajoutes} jeu${ajoutes > 1 ? "x" : ""} ajouté${ajoutes > 1 ? "s" : ""}…`;
-      } catch (err) {
-        toast("Espace insuffisant ou stockage refusé : " + err.message);
-        ignores++;
       }
     }
   }

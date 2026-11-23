@@ -486,6 +486,74 @@ svg {
   margin-top: 30px;
 }
 
+/* Jeux libres à essayer : repliés quand la bibliothèque a des jeux. */
+.libres {
+  margin: 32px auto 0;
+  max-width: 640px;
+  color: var(--doux);
+}
+.libres summary {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--doux);
+  font-weight: 500;
+  cursor: pointer;
+}
+.libres summary::-webkit-details-marker {
+  display: none;
+}
+.libres summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin: -4px 0 0 12px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+  transition: transform var(--d-micro) var(--sortie);
+}
+.libres[open] summary::after {
+  margin-top: 4px;
+  transform: rotate(-135deg);
+}
+.libres a {
+  color: var(--accent-clair);
+}
+.libres > .sous {
+  text-align: center;
+}
+.libres-liste {
+  list-style: none;
+  margin: 14px 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.libre {
+  padding: 14px 16px;
+  border-radius: var(--rayon);
+  background: var(--surface);
+  border: 1px solid var(--trait);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.libre h3 {
+  margin: 0;
+  color: var(--texte);
+  font-size: 16px;
+  font-weight: 500;
+}
+.libre p {
+  margin: 0;
+}
+.libre .bouton {
+  margin-top: 6px;
+}
+
 /* ---------- Partie ---------- */
 
 .jeu {

@@ -1,6 +1,7 @@
 // Service worker : l'appli entière en cache, utilisable hors ligne. VERSION est remplacée par
 // scripts/web.sh (empreinte des fichiers) : une nouvelle version vide l'ancien cache.
-// Les ROM et sauvegardes ne passent jamais par ici (IndexedDB).
+// Les ROM et sauvegardes du joueur ne passent jamais par ici (IndexedDB) ; seuls les 2 jeux
+// libres servis par le site (jeux-libres/) sont en cache, pour les ajouter hors ligne.
 
 const VERSION = "dev";
 const CACHE = "gbemu-" + VERSION;
@@ -24,6 +25,8 @@ const FICHIERS = [
   "icones/icone-512.png",
   "icones/icone-masquable-512.png",
   "icones/apple-touch-icon.png",
+  "jeux-libres/libbet.gb",
+  "jeux-libres/ucity.gbc",
 ];
 
 self.addEventListener("install", (e) => {
