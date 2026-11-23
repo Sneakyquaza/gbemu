@@ -864,6 +864,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gb-web"
+version = "0.9.0"
+dependencies = [
+ "crc32fast",
+ "gb-core",
+ "gba-core",
+ "wasm-bindgen",
+ "zip",
+]
+
+[[package]]
 name = "gba-core"
 version = "0.9.0"
 dependencies = [

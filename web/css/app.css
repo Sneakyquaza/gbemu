@@ -1,0 +1,940 @@
+/* gbemu web : « la Game Boy la nuit, sous une lampe de bureau », comme l'app de bureau
+   (jetons de gb-app/src/dessin.rs, thème Nuit ; console de gb-app/src/console.rs). */
+
+@font-face {
+  font-family: "Rubik";
+  src: url("../fonts/Rubik-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Rubik";
+  src: url("../fonts/Rubik-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Rubik";
+  src: url("../fonts/Rubik-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-display: swap;
+}
+
+:root {
+  --fond: #16171f;
+  --fond-jeu: #111218;
+  --lampe: #3a302c;
+  --surface: #23253a;
+  --surface-haute: #2e3150;
+  --trait: rgba(58, 61, 92, 0.6);
+  --texte: #f0ebe3;
+  --doux: #a29fb8;
+  --discret: #86849f;
+  --accent: #d24a86;
+  --accent-clair: #f07aae;
+  --sur-accent: #fff6f9;
+  --alerte: #e8a23a;
+  /* Écran DMG, palette « Verte » */
+  --dmg-0: #c4cfa1;
+  --dmg-1: #8b956d;
+  --dmg-2: #4d533c;
+  --dmg-3: #1f1f1f;
+  /* Console dessinée */
+  --plastique: #c9c4bc;
+  --plastique-ombre: #9e998f;
+  --plastique-clair: #d8d4cc;
+  --croix-haut: #34343a;
+  --croix-bas: #17171b;
+  --baie-haut: #b02e6a;
+  --baie-bas: #741744;
+  --baie-allumee: #e85a98;
+  --pastille-haut: #7a7880;
+  --pastille-bas: #56545c;
+
+  --rayon: 14px;
+  --sortie: cubic-bezier(0.16, 1, 0.3, 1);
+  --doux-mvt: cubic-bezier(0.65, 0, 0.35, 1);
+  --d-micro: 140ms;
+  --d-mvt: 280ms;
+  --d-signature: 900ms;
+
+  --haut: max(env(safe-area-inset-top), 12px);
+  --droite: max(env(safe-area-inset-right), 14px);
+  --bas: max(env(safe-area-inset-bottom), 14px);
+  --gauche: max(env(safe-area-inset-left), 14px);
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--fond);
+  color: var(--texte);
+  font-family: "Rubik", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+body {
+  /* Halo chaud de la lampe, posé en haut de la page */
+  background:
+    radial-gradient(120% 60% at 30% -10%, rgba(58, 48, 44, 0.9), transparent 60%),
+    var(--fond);
+  background-attachment: fixed;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-clair);
+  outline-offset: 2px;
+}
+
+.cache {
+  position: fixed;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ---------- Boutons ---------- */
+
+.bouton {
+  min-height: 48px;
+  padding: 0 18px;
+  border: 1px solid var(--trait);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--texte);
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  transition: transform var(--d-micro) var(--sortie), background-color var(--d-micro);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.bouton:active {
+  transform: scale(0.97);
+}
+.bouton:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.bouton.principal {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--sur-accent);
+}
+.bouton.principal:active {
+  background: var(--baie-haut);
+}
+.bouton.discret {
+  background: transparent;
+}
+.bouton.danger {
+  background: #8e2a3a;
+  border-color: transparent;
+}
+.bouton small {
+  color: var(--doux);
+  font-weight: 400;
+  font-size: 13px;
+}
+
+.icone {
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--doux);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.icone:active {
+  background: var(--surface);
+}
+
+/* ---------- Bibliothèque ---------- */
+
+.biblio {
+  min-height: 100%;
+  padding: var(--haut) var(--droite) calc(var(--bas) + 24px) var(--gauche);
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.tete {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 56px;
+}
+
+.marque {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* Signature : les quatre teintes de l'écran DMG, collées comme sur l'écran */
+.nuancier {
+  display: inline-flex;
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06), 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+.nuancier i {
+  width: 9px;
+  height: 22px;
+  background: var(--dmg-0);
+}
+.nuancier i:nth-child(2) {
+  background: var(--dmg-1);
+}
+.nuancier i:nth-child(3) {
+  background: var(--dmg-2);
+}
+.nuancier i:nth-child(4) {
+  background: var(--dmg-3);
+}
+
+.tete-actions {
+  display: flex;
+  gap: 4px;
+  margin-right: -10px;
+}
+
+.astuce {
+  margin: 8px 0 4px;
+  padding: 14px 16px;
+  border-radius: var(--rayon);
+  background: var(--surface);
+  border: 1px solid var(--trait);
+  color: var(--doux);
+  font-size: 15px;
+}
+.astuce p {
+  margin: 0 0 10px;
+}
+.astuce-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.outils {
+  display: flex;
+  gap: 10px;
+  margin: 12px 0 18px;
+}
+.outils.sans-jeux .champ {
+  display: none;
+}
+.outils.sans-jeux .bouton {
+  flex: 1;
+}
+.champ {
+  flex: 1;
+  min-width: 0;
+  min-height: 48px;
+  padding: 0 16px;
+  border-radius: 12px;
+  border: 1px solid var(--trait);
+  background: rgba(35, 37, 58, 0.7);
+  color: var(--texte);
+  font: inherit;
+}
+.champ::placeholder {
+  color: var(--discret);
+}
+
+.etat-ajout {
+  margin: -6px 0 16px;
+  color: var(--doux);
+  font-size: 14px;
+}
+
+.grille {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 22px 16px;
+}
+@media (max-width: 359px) {
+  .grille {
+    grid-template-columns: 1fr 1fr;
+    gap: 18px 12px;
+  }
+}
+
+.element {
+  position: relative;
+}
+
+.carte {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.carte:active .cartouche {
+  transform: translateY(2px) scale(0.98);
+}
+
+/* Cartouche : plastique strié en haut, coin coupé, étiquette teintée par le jeu */
+.cartouche {
+  --teinte: 330deg;
+  position: relative;
+  display: block;
+  aspect-ratio: 1 / 1.08;
+  border-radius: 6px 6px 10px 10px;
+  background:
+    repeating-linear-gradient(180deg, transparent 0 5px, rgba(0, 0, 0, 0.09) 5px 6px) top / 100% 13% no-repeat,
+    linear-gradient(160deg, var(--plastique-clair), var(--plastique) 45%, var(--plastique-ombre));
+  clip-path: polygon(0 0, 88% 0, 100% 9%, 100% 100%, 0 100%);
+  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.12);
+  transition: transform var(--d-micro) var(--sortie);
+}
+.cartouche.gbc {
+  background:
+    repeating-linear-gradient(180deg, transparent 0 5px, rgba(0, 0, 0, 0.14) 5px 6px) top / 100% 13% no-repeat,
+    linear-gradient(160deg, #6e6a86, #57536f 45%, #403d55);
+}
+.cartouche.gba {
+  aspect-ratio: 1.36 / 1;
+  margin-top: auto;
+  border-radius: 6px 6px 14px 14px;
+  clip-path: none;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.18), transparent 8%, transparent 92%, rgba(0, 0, 0, 0.18)),
+    linear-gradient(170deg, #5e5f73, #46475a 55%, #383948);
+}
+.etiquette {
+  position: absolute;
+  left: 11%;
+  right: 11%;
+  top: 22%;
+  bottom: 10%;
+  border-radius: 3px;
+  padding: 8px 9px;
+  display: flex;
+  align-items: flex-end;
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.22), transparent 40%),
+    linear-gradient(200deg, hsl(var(--teinte) 52% 58%), hsl(calc(var(--teinte) + 40deg) 48% 34%));
+  color: rgba(255, 255, 255, 0.95);
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1.15;
+  overflow: hidden;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+  overflow-wrap: anywhere;
+}
+.gba .etiquette {
+  left: 9%;
+  right: 9%;
+  top: 16%;
+  bottom: 30%;
+}
+
+.titre {
+  font-weight: 500;
+  font-size: 15px;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.meta {
+  color: var(--discret);
+  font-size: 13px;
+}
+.puce {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  color: var(--fond);
+  background: var(--dmg-0);
+}
+.puce.gbc {
+  background: var(--accent-clair);
+}
+.puce.gba {
+  background: #a9a6d6;
+}
+
+.suppr {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  color: var(--texte);
+  cursor: pointer;
+}
+.suppr svg {
+  width: 26px;
+  height: 26px;
+  padding: 5px;
+  border-radius: 50%;
+  background: rgba(22, 23, 31, 0.78);
+  stroke-width: 2.4;
+}
+@media (hover: hover) {
+  .suppr {
+    opacity: 0;
+    transition: opacity var(--d-micro);
+  }
+  .element:hover .suppr,
+  .suppr:focus-visible {
+    opacity: 1;
+  }
+}
+
+.vide {
+  margin: 40px auto 0;
+  max-width: 340px;
+  text-align: center;
+  color: var(--doux);
+}
+.vide h2 {
+  margin: 22px 0 8px;
+  color: var(--texte);
+  font-size: 20px;
+  font-weight: 500;
+}
+.vide p {
+  margin: 0;
+}
+.cartouche-vide {
+  width: 104px;
+  height: 112px;
+  margin: 0 auto;
+  border: 2px dashed var(--discret);
+  border-radius: 8px 8px 12px 12px;
+  position: relative;
+  opacity: 0.8;
+}
+.cartouche-vide span {
+  position: absolute;
+  inset: 26px 12px 12px;
+  border-radius: 3px;
+  background: repeating-linear-gradient(135deg, var(--dmg-2) 0 6px, var(--dmg-3) 6px 12px);
+  opacity: 0.6;
+}
+.vide-recherche {
+  color: var(--doux);
+  text-align: center;
+  margin-top: 30px;
+}
+
+/* ---------- Partie ---------- */
+
+.jeu {
+  position: fixed;
+  inset: 0;
+  height: 100vh;
+  height: 100dvh;
+  padding: var(--haut) var(--droite) var(--bas) var(--gauche);
+  background:
+    radial-gradient(90% 50% at 50% 0%, rgba(58, 48, 44, 0.55), transparent 70%),
+    var(--fond-jeu);
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  grid-template-rows: auto auto 1fr auto;
+  grid-template-areas:
+    "ecran ecran ecran"
+    "l pause r"
+    "croix . ab"
+    "sel . sta";
+  align-items: center;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  overflow: hidden;
+}
+
+.ecran-zone {
+  grid-area: ecran;
+  display: grid;
+  place-items: center;
+  padding-top: 4px;
+}
+.ecran-cadre {
+  padding: 10px;
+  border-radius: 10px 10px 26px 10px;
+  background: linear-gradient(180deg, #5e5f73, #464758);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+canvas {
+  display: block;
+  width: 160px;
+  height: 144px;
+  background: var(--dmg-0);
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border-radius: 2px;
+}
+.jeu[data-console="gbc"] canvas,
+.jeu[data-console="gba"] canvas {
+  background: #000;
+}
+
+/* Moment signature : l'écran s'allume comme un LCD qui chauffe */
+.jeu.allume canvas {
+  animation: allumage var(--d-signature) var(--sortie) both;
+}
+@keyframes allumage {
+  0% {
+    opacity: 0;
+    filter: brightness(2.4) saturate(0);
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    filter: none;
+  }
+}
+
+/* Croix */
+.croix {
+  grid-area: croix;
+  justify-self: center;
+  position: relative;
+  width: 156px;
+  height: 156px;
+  --rx: 0deg;
+  --ry: 0deg;
+  transform: perspective(520px) rotateX(var(--rx)) rotateY(var(--ry));
+  transition: transform 60ms linear;
+}
+.croix.haut {
+  --rx: 12deg;
+}
+.croix.bas {
+  --rx: -12deg;
+}
+.croix.gauche {
+  --ry: -12deg;
+}
+.croix.droite {
+  --ry: 12deg;
+}
+.branche {
+  position: absolute;
+  border-radius: 9px;
+  background: linear-gradient(160deg, var(--croix-haut), var(--croix-bas));
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.branche.h {
+  left: 0;
+  right: 0;
+  top: 52px;
+  height: 52px;
+}
+.branche.v {
+  top: 0;
+  bottom: 0;
+  left: 52px;
+  width: 52px;
+}
+.moyeu {
+  position: absolute;
+  left: 62px;
+  top: 62px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 40%, rgba(0, 0, 0, 0.45), transparent 70%);
+}
+
+/* A et B, en diagonale comme sur la console */
+.ab {
+  grid-area: ab;
+  justify-self: center;
+  position: relative;
+  width: 150px;
+  height: 128px;
+}
+.rond {
+  position: absolute;
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 18px;
+  color: rgba(255, 246, 249, 0.85);
+  background: radial-gradient(circle at 40% 30%, var(--baie-haut), var(--baie-bas));
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transition: transform 60ms linear, background 60ms linear;
+}
+.rond.b {
+  left: 0;
+  bottom: 0;
+}
+.rond.a {
+  right: 0;
+  top: 0;
+}
+.rond.tenu {
+  transform: scale(0.93);
+  background: radial-gradient(circle at 40% 30%, var(--baie-allumee), var(--baie-haut));
+}
+
+/* Start / Select : pastilles inclinées, zone de toucher de 64 × 48 */
+.pastille {
+  width: 72px;
+  height: 52px;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 4px;
+  color: var(--discret);
+  font-size: 12px;
+  font-weight: 500;
+}
+.pastille::before {
+  content: "";
+  width: 50px;
+  height: 15px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, var(--pastille-haut), var(--pastille-bas));
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.4);
+  transform: rotate(-22deg);
+  transition: transform 60ms linear;
+}
+.pastille.tenu::before {
+  transform: rotate(-22deg) scale(0.9);
+  filter: brightness(1.3);
+}
+.select {
+  grid-area: sel;
+  justify-self: end;
+}
+.start {
+  grid-area: sta;
+  justify-self: start;
+}
+
+/* L / R (GBA seulement) */
+.epaule {
+  width: 104px;
+  height: 48px;
+  border-radius: 12px 12px 18px 18px;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  color: var(--doux);
+  background: linear-gradient(180deg, #3b3c4c, #26272f);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: transform 60ms linear;
+}
+.epaule.tenu {
+  transform: translateY(2px);
+  color: var(--texte);
+  background: linear-gradient(180deg, #4b4c60, #2f303a);
+}
+.epaule.l {
+  grid-area: l;
+  justify-self: start;
+}
+.epaule.r {
+  grid-area: r;
+  justify-self: end;
+}
+.jeu:not([data-console="gba"]) .epaule {
+  display: none;
+}
+
+.pause {
+  grid-area: pause;
+  justify-self: center;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(46, 49, 80, 0.6);
+  color: var(--doux);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+@media (orientation: landscape) {
+  .jeu {
+    grid-template-columns: 1fr auto 1fr;
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas:
+      "l ecran r"
+      "croix ecran ab"
+      "sel ecran sta";
+    column-gap: 12px;
+  }
+  .ecran-zone {
+    padding-top: 0;
+  }
+  .pause {
+    grid-area: sel;
+    justify-self: end;
+    align-self: center;
+  }
+  .select {
+    justify-self: start;
+  }
+  .start {
+    justify-self: end;
+  }
+  .epaule.l {
+    justify-self: start;
+    align-self: start;
+  }
+  .epaule.r {
+    justify-self: end;
+    align-self: start;
+  }
+  .croix {
+    width: 144px;
+    height: 144px;
+  }
+  .branche.h {
+    top: 46px;
+    height: 52px;
+  }
+  .branche.v {
+    left: 46px;
+    width: 52px;
+  }
+  .moyeu {
+    left: 56px;
+    top: 56px;
+  }
+  .ab {
+    width: 144px;
+    height: 120px;
+  }
+  .rond {
+    width: 66px;
+    height: 66px;
+  }
+}
+
+/* Petits écrans en hauteur (paysage de téléphone) : commandes resserrées */
+@media (orientation: landscape) and (max-height: 360px) {
+  .croix {
+    transform: perspective(520px) rotateX(var(--rx)) rotateY(var(--ry)) scale(0.9);
+  }
+}
+
+/* ---------- Voiles, feuilles, toast ---------- */
+
+.voile {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  align-items: end;
+  justify-items: center;
+  padding: var(--haut) var(--droite) var(--bas) var(--gauche);
+  background: rgba(17, 18, 24, 0.72);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  animation: fondu var(--d-mvt) var(--sortie);
+  touch-action: manipulation;
+}
+@media (min-height: 600px) and (min-width: 600px), (orientation: landscape) {
+  .voile {
+    align-items: center;
+  }
+}
+.feuille {
+  width: 100%;
+  max-width: 440px;
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 22px 20px 20px;
+  border-radius: 20px;
+  background: var(--surface);
+  border: 1px solid var(--trait);
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.45);
+  animation: monte var(--d-mvt) var(--sortie);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.feuille h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+.feuille h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--doux);
+}
+.sous {
+  margin: 4px 0 0;
+  color: var(--doux);
+  font-size: 14px;
+}
+.menu {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+.menu .bouton {
+  width: 100%;
+  justify-content: space-between;
+}
+.menu .bouton.principal {
+  justify-content: center;
+}
+.menu.rangee {
+  grid-template-columns: 1fr 1fr;
+}
+.menu.rangee .bouton {
+  justify-content: center;
+}
+.groupe {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--trait);
+}
+.groupe .menu {
+  margin-top: 12px;
+}
+.feuille > .bouton.principal {
+  width: 100%;
+  margin-top: 22px;
+}
+.ligne {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+}
+.ligne input[type="range"] {
+  flex: 1;
+  max-width: 220px;
+  accent-color: var(--accent);
+  height: 32px;
+}
+.bascule {
+  width: 24px;
+  height: 24px;
+  accent-color: var(--accent);
+}
+
+.toast {
+  position: fixed;
+  z-index: 20;
+  left: 50%;
+  bottom: calc(var(--bas) + 12px);
+  max-width: min(92vw, 460px);
+  padding: 12px 18px;
+  border-radius: 12px;
+  background: var(--surface-haute);
+  color: var(--texte);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  font-size: 15px;
+  transform: translateX(-50%);
+  transition: opacity var(--d-mvt) var(--doux-mvt), transform var(--d-mvt) var(--sortie);
+  animation: toast-entre var(--d-mvt) var(--sortie);
+}
+.toast.parti {
+  opacity: 0;
+  transform: translate(-50%, 8px);
+}
+
+@keyframes fondu {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes monte {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+@keyframes toast-entre {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 10px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+  .croix {
+    transform: none !important;
+  }
+}

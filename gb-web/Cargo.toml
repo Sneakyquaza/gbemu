@@ -1,0 +1,16 @@
+[package]
+name = "gb-web"
+description = "Version web (WebAssembly) : gb-core et gba-core exposés au navigateur"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gb-core = { path = "../gb-core" }
+gba-core = { path = "../gba-core" }
+wasm-bindgen = "=0.2.130"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+crc32fast = "1.5"

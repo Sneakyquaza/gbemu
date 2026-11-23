@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="description" content="Émulateur Game Boy, Game Boy Color et Game Boy Advance. Tes jeux restent sur ton appareil.">
+<meta name="theme-color" content="#16171F">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="gbemu">
+<meta name="format-detection" content="telephone=no">
+<title>gbemu</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icone-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preload" href="fonts/Rubik-Regular.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="css/app.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+
+<main id="biblio" class="vue biblio">
+  <header class="tete">
+    <h1 class="marque"><span class="nuancier" aria-hidden="true"><i></i><i></i><i></i><i></i></span>gbemu</h1>
+    <div class="tete-actions">
+      <button id="b-plein-ecran" class="icone" type="button" aria-label="Plein écran" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
+      </button>
+      <button id="b-reglages" class="icone" type="button" aria-label="Réglages">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <aside id="astuce" class="astuce" hidden>
+    <p id="astuce-texte"></p>
+    <div class="astuce-actions">
+      <button id="b-installer" class="bouton" type="button" hidden>Installer</button>
+      <button id="b-astuce-fermer" class="bouton discret" type="button">Compris</button>
+    </div>
+  </aside>
+
+  <div class="outils">
+    <input id="recherche" class="champ" type="search" placeholder="Rechercher" autocomplete="off" enterkeyhint="search" aria-label="Rechercher un jeu">
+    <button id="b-ajouter" class="bouton principal" type="button">Ajouter des jeux</button>
+    <input id="f-roms" class="cache" type="file" multiple tabindex="-1" aria-hidden="true">
+  </div>
+
+  <p id="etat-ajout" class="etat-ajout" role="status" hidden></p>
+  <ul id="liste" class="grille" aria-label="Jeux"></ul>
+
+  <div id="vide" class="vide" hidden>
+    <div class="cartouche-vide" aria-hidden="true"><span></span></div>
+    <h2>Aucun jeu pour l'instant</h2>
+    <p>Ajoute tes fichiers .gb, .gbc, .gba ou .zip depuis le téléphone. Ils restent sur cet appareil, rien n'est envoyé.</p>
+  </div>
+  <p id="aucun" class="vide-recherche" hidden>Aucun jeu ne correspond.</p>
+</main>
+
+<section id="jeu" class="vue jeu" hidden aria-label="Partie">
+  <div class="ecran-zone">
+    <div class="ecran-cadre"><canvas id="ecran" width="160" height="144"></canvas></div>
+  </div>
+  <div class="epaule l" data-b="l">L</div>
+  <div class="epaule r" data-b="r">R</div>
+  <button id="b-pause" class="pause" type="button" data-hors-commandes aria-label="Pause">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg>
+  </button>
+  <div class="croix" data-croix aria-hidden="true">
+    <span class="branche h"></span><span class="branche v"></span><span class="moyeu"></span>
+  </div>
+  <div class="ab" aria-hidden="true">
+    <div class="rond b" data-b="b">B</div>
+    <div class="rond a" data-b="a">A</div>
+  </div>
+  <div class="pastille select" data-b="select"><span>Select</span></div>
+  <div class="pastille start" data-b="start"><span>Start</span></div>
+
+  <div id="menu-pause" class="voile" data-hors-commandes hidden>
+    <div class="feuille" role="dialog" aria-modal="true" aria-labelledby="pause-titre">
+      <h2 id="pause-titre">Pause</h2>
+      <p id="pause-jeu" class="sous"></p>
+      <div class="menu">
+        <button id="m-reprendre" class="bouton principal" type="button">Reprendre</button>
+        <button id="m-sauver" class="bouton" type="button">Sauver l'état</button>
+        <button id="m-charger" class="bouton" type="button">Charger l'état<small id="m-charger-date"></small></button>
+        <button id="m-son" class="bouton" type="button">Son coupé</button>
+        <button id="m-biblio" class="bouton discret" type="button">Bibliothèque</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div id="reglages" class="voile" hidden>
+  <div class="feuille" role="dialog" aria-modal="true" aria-labelledby="reglages-titre">
+    <h2 id="reglages-titre">Réglages</h2>
+    <section class="groupe">
+      <h3>Son</h3>
+      <label class="ligne"><span>Volume</span><input id="r-volume" type="range" min="0" max="100" step="1"></label>
+      <label class="ligne"><span>Son coupé</span><input id="r-coupe" type="checkbox" class="bascule"></label>
+    </section>
+    <section class="groupe">
+      <h3>Sauvegardes</h3>
+      <p class="sous">Les sauvegardes des cartouches sont écrites toutes les 2 secondes sur cet appareil. Exporte-les pour les garder ailleurs ou les passer sur l'ordinateur.</p>
+      <div class="menu">
+        <button id="r-exporter" class="bouton" type="button">Exporter les sauvegardes</button>
+        <button id="r-importer" class="bouton" type="button">Importer des sauvegardes</button>
+        <input id="f-sav" class="cache" type="file" multiple tabindex="-1" aria-hidden="true">
+      </div>
+      <p id="r-message" class="sous" role="status"></p>
+    </section>
+    <section class="groupe">
+      <h3>Appareil</h3>
+      <p id="r-espace" class="sous"></p>
+    </section>
+    <button id="r-fermer" class="bouton principal" type="button">Fermer</button>
+  </div>
+</div>
+
+<div id="confirmer" class="voile" hidden>
+  <div class="feuille petite" role="alertdialog" aria-modal="true" aria-labelledby="confirmer-titre">
+    <h2 id="confirmer-titre"></h2>
+    <p id="confirmer-texte" class="sous"></p>
+    <div class="menu rangee">
+      <button id="c-non" class="bouton" type="button">Annuler</button>
+      <button id="c-oui" class="bouton danger" type="button">Supprimer</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
