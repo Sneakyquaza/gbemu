@@ -8,7 +8,7 @@ use crate::biblio::Plateforme;
 use crate::jaquettes::{self, Vignette};
 use crate::screenscraper::{self, Demande, Identifiants, Limiteur};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Condvar, Mutex};
@@ -20,6 +20,8 @@ const PAUSE: Duration = Duration::from_millis(200);
 const PAUSE_RESEAU: Duration = Duration::from_secs(30);
 /// Échecs d'un même jeu avant qu'il passe en fin de file (pas de blocage en tête).
 const ESSAIS: u32 = 3;
+/// Passages en fin de file avant qu'un jeu soit retiré du lot (serveur toujours en erreur).
+const PASSAGES: u32 = 3;
 /// Intervalle minimal entre deux enregistrements de la file pendant un lot (cache : ~1 Mo pour
 /// 5 200 jeux).
 const INTERVALLE_ENREGISTREMENT: Duration = Duration::from_secs(30);
@@ -47,6 +49,8 @@ pub struct File {
     /// Faits depuis le début du lot (barre de progression).
     pub faits: usize,
     pub total: usize,
+    /// Passages en fin de file par jeu (CRC).
+    passages: HashMap<u32, u32>,
     /// Jeu en cours de traitement par le fil.
     #[serde(skip)]
     en_cours: Option<u32>,
@@ -73,6 +77,7 @@ impl File {
     /// Place le jeu en tête (forcé), qu'il soit déjà dans la file ou non.
     pub fn prioriser(&mut self, mut t: Tache) {
         t.force = true;
+        self.passages.remove(&t.crc);
         if self.en_cours == Some(t.crc) {
             self.relance = true;
         }
@@ -103,11 +108,24 @@ impl File {
         }
         if let Some(i) = self.a_faire.iter().position(|x| x.crc == crc) {
             self.a_faire.remove(i);
-            self.faits = self.faits.saturating_add(1);
+            self.compter_fait(crc);
         }
+        self.fin_de_lot();
+    }
+
+    /// Jeu sorti de la file : compté fait.
+    fn compter_fait(&mut self, crc: u32) {
+        self.passages.remove(&crc);
+        self.faits = self.faits.saturating_add(1);
+        self.fin_de_lot();
+    }
+
+    /// File vide : compteurs remis à zéro.
+    fn fin_de_lot(&mut self) {
         if self.a_faire.is_empty() {
             self.faits = 0;
             self.total = 0;
+            self.passages.clear();
         }
     }
 
@@ -117,16 +135,25 @@ impl File {
         self.relance = false;
     }
 
-    /// Jeu en échec répété : passe en fin de file (les suivants ne restent pas bloqués).
+    /// Jeu en échec répété : passe en fin de file (les suivants ne restent pas bloqués) ; au
+    /// `PASSAGES`-ième passage, retiré et compté fait, en échec (pas de marqueur absent : il
+    /// sera reproposé au prochain import), pour que le lot finisse.
     fn repousser(&mut self, crc: u32) {
         self.abandonner();
-        if let Some(t) = self
+        let Some(t) = self
             .a_faire
             .iter()
             .position(|x| x.crc == crc)
             .and_then(|i| self.a_faire.remove(i))
-        {
+        else {
+            return;
+        };
+        let n = self.passages.entry(crc).or_insert(0);
+        *n += 1;
+        if *n < PASSAGES {
             self.a_faire.push_back(t);
+        } else {
+            self.compter_fait(crc);
         }
     }
 
@@ -508,6 +535,41 @@ mod tests {
         let a: Vec<u64> = (1..=7).map(|n| attente(n).as_secs()).collect();
         assert_eq!(a, [30, 60, 120, 240, 480, 480, 480]);
         assert_eq!(attente(u32::MAX).as_secs(), 480);
+    }
+
+    #[test]
+    fn serveur_toujours_en_erreur_lot_fini() {
+        let mut f = File::default();
+        f.ajouter(vec![tache(1), tache(2)]);
+        // Jeu 1 en échec à chaque passage, jeu 2 réussi au premier.
+        let mut tours = 0;
+        while let Some(t) = f.commencer() {
+            tours += 1;
+            assert!(tours < 10, "file sans fin");
+            if t.crc == 1 {
+                f.repousser(1);
+            } else {
+                f.terminer(2);
+            }
+        }
+        // 3 passages du jeu 1 + le jeu 2 ; lot fini, compteurs remis à zéro.
+        assert_eq!(tours, 4);
+        assert_eq!((f.progres(), f.faits, f.total), (None, 0, 0));
+        assert!(f.passages.is_empty());
+        // Progression pendant le lot : le jeu retiré compte comme fait.
+        f.ajouter(vec![tache(1), tache(2)]);
+        for _ in 0..PASSAGES {
+            f.commencer();
+            f.repousser(1);
+        }
+        assert_eq!(f.a_faire.iter().map(|t| t.crc).collect::<Vec<_>>(), [2]);
+        assert_eq!(f.progres(), Some((1, 2)));
+        // Redemandé depuis la fiche : compteur de passages remis à zéro.
+        f.ajouter(vec![tache(3)]);
+        f.commencer();
+        f.repousser(2);
+        f.prioriser(tache(2));
+        assert!(!f.passages.contains_key(&2));
     }
 
     #[test]
